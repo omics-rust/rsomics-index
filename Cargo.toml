@@ -1,0 +1,38 @@
+[package]
+name = "rsomics-index"
+version = "0.1.0"
+description = "BGZF, tabix, and sequence-resource indexing workflows"
+edition = "2024"
+rust-version = "1.91"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/omics-rust/rsomics-index"
+homepage = "https://github.com/omics-rust/rsomics-index"
+documentation = "https://docs.rs/rsomics-index"
+readme = "README.md"
+authors = ["Zane Leong <efd@live.com>"]
+categories = ["science", "command-line-utilities"]
+keywords = ["bgzf", "tabix", "index", "genomics", "bioinformatics"]
+
+[lib]
+name = "rsomics_index"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "rsomics-index"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+crc32fast = "1.5"
+crossbeam-channel = "0.5"
+libdeflater = "1"
+noodles = { version = "0.110", features = ["bgzf", "core", "csi", "tabix"] }
+noodles-bgzf = { version = "0.47", features = ["libdeflate"] }
+rsomics-common = "0.12"
+rsomics-help = "0.4"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+
