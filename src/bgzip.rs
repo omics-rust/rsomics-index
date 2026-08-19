@@ -2,8 +2,12 @@ use std::io::{self, Read, Write};
 use std::num::NonZero;
 use std::ops::Range;
 
+mod frame;
+mod index;
 mod reader;
 mod writer;
+
+pub use index::GziIndex;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CompressOptions {
@@ -22,7 +26,7 @@ impl Default for CompressOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct StreamStats {
     pub bytes_in: u64,
     pub bytes_out: u64,
@@ -43,4 +47,18 @@ where
     W: Write,
 {
     reader::decompress(source, sink, range)
+}
+
+pub fn decompress_indexed<R, W>(
+    source: R,
+    index: &GziIndex,
+    offset: u64,
+    size: Option<u64>,
+    sink: W,
+) -> io::Result<StreamStats>
+where
+    R: Read + std::io::Seek,
+    W: Write,
+{
+    reader::decompress_indexed(source, index, offset, size, sink)
 }

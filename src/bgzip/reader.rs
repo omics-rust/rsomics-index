@@ -1,14 +1,12 @@
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 
 use noodles_bgzf::io::Reader;
 
-use super::StreamStats;
-
-const EOF_BLOCK: [u8; 28] = [
-    0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, b'B', b'C', 0x02, 0x00,
-    0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-];
+use super::{
+    GziIndex, StreamStats,
+    frame::{EOF_BLOCK, frame_uncompressed_size, invalid, parse_block_size},
+};
 
 pub(super) fn decompress<R, W>(
     source: R,
@@ -28,7 +26,7 @@ where
 
     let tracked = TailReader::new(source);
     let mut reader = Reader::new(tracked);
-    let bytes_out = io::copy(&mut reader, &mut sink)?;
+    let bytes_out = io::copy(&mut reader, &mut sink).map_err(normalize_truncation)?;
     sink.flush()?;
     let tracked = reader.into_inner();
     if !tracked.has_complete_eof() {
@@ -41,7 +39,43 @@ where
     Ok(StreamStats {
         bytes_in: tracked.bytes_read,
         bytes_out,
-        blocks: 0,
+        blocks: tracked.frames.data_blocks,
+    })
+}
+
+pub(super) fn decompress_indexed<R, W>(
+    source: R,
+    index: &GziIndex,
+    offset: u64,
+    size: Option<u64>,
+    mut sink: W,
+) -> io::Result<StreamStats>
+where
+    R: Read + Seek,
+    W: Write,
+{
+    let require_eof = size.is_none();
+    let mut reader = Reader::new(TailReader::new(source));
+    reader.seek(index.query(offset)?)?;
+    let bytes_out = match size {
+        Some(size) => io::copy(&mut (&mut reader).take(size), &mut sink),
+        None => io::copy(&mut reader, &mut sink),
+    };
+    let bytes_out = bytes_out.map_err(normalize_truncation)?;
+    sink.flush()?;
+
+    let tracked = reader.into_inner();
+    if require_eof && !tracked.has_complete_eof() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "BGZF stream is missing its complete EOF marker",
+        ));
+    }
+
+    Ok(StreamStats {
+        bytes_in: tracked.bytes_read,
+        bytes_out,
+        blocks: tracked.frames.data_blocks,
     })
 }
 
@@ -77,12 +111,22 @@ impl<R: Read> Read for TailReader<R> {
     }
 }
 
+impl<R: Seek> Seek for TailReader<R> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        let position = self.inner.seek(position)?;
+        self.frames = FrameTracker::default();
+        self.bytes_read = 0;
+        Ok(position)
+    }
+}
+
 #[derive(Default)]
 struct FrameTracker {
     frame: Vec<u8>,
     header_end: Option<usize>,
     frame_end: Option<usize>,
     saw_eof: bool,
+    data_blocks: u64,
 }
 
 impl FrameTracker {
@@ -96,6 +140,14 @@ impl FrameTracker {
             if self.frame_end == Some(self.frame.len()) {
                 if self.frame == EOF_BLOCK {
                     self.saw_eof = true;
+                } else {
+                    if frame_uncompressed_size(&self.frame)? == 0 {
+                        return Err(invalid("noncanonical empty BGZF block"));
+                    }
+                    self.data_blocks = self
+                        .data_blocks
+                        .checked_add(1)
+                        .ok_or_else(|| io::Error::other("BGZF block count overflow"))?;
                 }
                 self.frame.clear();
                 self.header_end = None;
@@ -134,34 +186,13 @@ impl FrameTracker {
     }
 }
 
-fn parse_block_size(header: &[u8]) -> io::Result<usize> {
-    let mut position = 12;
-    let mut block_size = None;
-    while position < header.len() {
-        let fields_end = position
-            .checked_add(4)
-            .ok_or_else(|| invalid("BGZF extra subfield overflow"))?;
-        let fields = header
-            .get(position..fields_end)
-            .ok_or_else(|| invalid("truncated BGZF extra subfield"))?;
-        let data_len = usize::from(u16::from_le_bytes([fields[2], fields[3]]));
-        let data_end = fields_end
-            .checked_add(data_len)
-            .ok_or_else(|| invalid("BGZF extra subfield length overflow"))?;
-        let data = header
-            .get(fields_end..data_end)
-            .ok_or_else(|| invalid("truncated BGZF extra subfield data"))?;
-        if fields[..2] == *b"BC" {
-            if data.len() != 2 || block_size.is_some() {
-                return Err(invalid("invalid or duplicate BGZF BC subfield"));
-            }
-            block_size = Some(usize::from(u16::from_le_bytes([data[0], data[1]])) + 1);
-        }
-        position = data_end;
+fn normalize_truncation(error: io::Error) -> io::Error {
+    if error.kind() == io::ErrorKind::UnexpectedEof {
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "BGZF stream ended before its EOF marker",
+        )
+    } else {
+        error
     }
-    block_size.ok_or_else(|| invalid("BGZF header has no BC subfield"))
-}
-
-fn invalid(message: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message)
 }

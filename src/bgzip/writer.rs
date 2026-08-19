@@ -1,20 +1,15 @@
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
-use std::sync::mpsc;
 use std::thread;
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 use libdeflater::{CompressionLvl, Compressor};
 
-use super::{CompressOptions, StreamStats};
+use super::{CompressOptions, StreamStats, frame::EOF_BLOCK};
 
 const MAX_DATA_SIZE: usize = 65_239;
 const HEADER_SIZE: usize = 18;
 const TRAILER_SIZE: usize = 8;
-const EOF_BLOCK: [u8; 28] = [
-    0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, b'B', b'C', 0x02, 0x00,
-    0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-];
 
 struct Work {
     sequence: u64,
@@ -48,9 +43,8 @@ where
     let queue_capacity = options.workers.get().saturating_mul(2).max(1);
     let (work_tx, work_rx) = bounded::<Work>(queue_capacity);
     let (done_tx, done_rx) = bounded::<Done>(queue_capacity);
-    let (sink_tx, sink_rx) = mpsc::sync_channel(1);
 
-    let writer = thread::spawn(move || write_frames(sink, done_rx, sink_tx));
+    let writer = thread::spawn(move || write_frames(sink, done_rx));
     let mut workers = Vec::with_capacity(options.workers.get());
     for _ in 0..options.workers.get() {
         let work_rx = work_rx.clone();
@@ -63,23 +57,26 @@ where
     drop(work_rx);
     drop(done_tx);
 
-    let mut bytes_in = 0u64;
-    let mut blocks = 0u64;
-    let mut buffer = vec![0u8; MAX_DATA_SIZE];
-    let mut pending = Vec::with_capacity(MAX_DATA_SIZE * 2);
-    while let Some(data) = next_block(&mut source, &mut buffer, &mut pending, options.text)? {
-        let size = data.len();
-        bytes_in = bytes_in
-            .checked_add(size as u64)
-            .ok_or_else(|| io::Error::other("input byte count overflow"))?;
-        work_tx
-            .send(Work {
-                sequence: blocks,
-                data,
-            })
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "BGZF worker stopped"))?;
-        blocks += 1;
-    }
+    let producer_result = (|| {
+        let mut bytes_in = 0u64;
+        let mut blocks = 0u64;
+        let mut buffer = vec![0u8; MAX_DATA_SIZE];
+        let mut pending = Vec::with_capacity(MAX_DATA_SIZE * 2);
+        while let Some(data) = next_block(&mut source, &mut buffer, &mut pending, options.text)? {
+            let size = data.len();
+            bytes_in = bytes_in
+                .checked_add(size as u64)
+                .ok_or_else(|| io::Error::other("input byte count overflow"))?;
+            work_tx
+                .send(Work {
+                    sequence: blocks,
+                    data,
+                })
+                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "BGZF worker stopped"))?;
+            blocks += 1;
+        }
+        Ok::<_, io::Error>((bytes_in, blocks))
+    })();
     drop(work_tx);
 
     let mut worker_panicked = false;
@@ -89,14 +86,11 @@ where
     let writer_result = writer
         .join()
         .map_err(|_| io::Error::other("BGZF writer thread panicked"))?;
-    writer_result?;
+    let (sink, bytes_out, written_blocks) = writer_result?;
     if worker_panicked {
         return Err(io::Error::other("BGZF compression worker panicked"));
     }
-
-    let (sink, bytes_out, written_blocks) = sink_rx
-        .recv()
-        .map_err(|_| io::Error::other("BGZF writer did not return its sink"))??;
+    let (bytes_in, blocks) = producer_result?;
     if written_blocks != blocks {
         return Err(io::Error::other(
             "BGZF output is missing a compressed block",
@@ -220,11 +214,7 @@ fn encode_stored(data: &[u8]) -> io::Result<Vec<u8>> {
     Ok(output)
 }
 
-fn write_frames<W: Write>(
-    mut sink: W,
-    done_rx: Receiver<Done>,
-    sink_tx: mpsc::SyncSender<io::Result<(W, u64, u64)>>,
-) -> io::Result<()> {
+fn write_frames<W: Write>(mut sink: W, done_rx: Receiver<Done>) -> io::Result<(W, u64, u64)> {
     let mut pending = BTreeMap::new();
     let mut next = 0u64;
     let mut bytes_out = 0u64;
@@ -247,7 +237,5 @@ fn write_frames<W: Write>(
     sink.write_all(&EOF_BLOCK)?;
     sink.flush()?;
     bytes_out += EOF_BLOCK.len() as u64;
-    sink_tx
-        .send(Ok((sink, bytes_out, next)))
-        .map_err(|_| io::Error::other("BGZF caller stopped before receiving its sink"))
+    Ok((sink, bytes_out, next))
 }
