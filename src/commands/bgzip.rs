@@ -1,7 +1,9 @@
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, Read};
+use std::num::NonZero;
 use std::path::{Path, PathBuf};
 
+use clap::{ArgGroup, Args};
 use rsomics_common::{
     AtomicFile, Context, Result, RsomicsError, reject_output_alias, write_atomic, write_output,
 };
@@ -10,6 +12,105 @@ use serde::Serialize;
 use crate::bgzip::{
     CompressOptions, GziIndex, StreamStats, compress, decompress, decompress_indexed,
 };
+
+use super::{ensure_replaceable, named_path, require_named_json_output, sidecar_path};
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("mode")
+        .args(["decompress", "test", "reindex"])
+        .multiple(false)
+))]
+pub struct Arguments {
+    /// Input file; use - or omit for standard input
+    #[arg(value_name = "INPUT", default_value = "-")]
+    input: PathBuf,
+
+    /// Write data to this file; omit or use - for standard output
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
+
+    /// Decompress BGZF input
+    #[arg(short, long)]
+    decompress: bool,
+
+    /// Validate BGZF input without writing decompressed data
+    #[arg(short = 't', long)]
+    test: bool,
+
+    /// Rebuild a GZI sidecar for an existing BGZF file
+    #[arg(short = 'r', long)]
+    reindex: bool,
+
+    /// Deflate compression level
+    #[arg(short = 'l', long = "compress-level", value_name = "0..9", value_parser = clap::value_parser!(u8).range(0..=9))]
+    level: Option<u8>,
+
+    /// Compression worker count
+    #[arg(short = '@', long, value_name = "N")]
+    threads: Option<NonZero<usize>>,
+
+    /// Fill blocks without preserving newline boundaries
+    #[arg(long)]
+    binary: bool,
+
+    /// GZI sidecar used for indexed decompression
+    #[arg(long, value_name = "GZI")]
+    index_input: Option<PathBuf>,
+
+    /// GZI sidecar created during compression or reindexing
+    #[arg(long, value_name = "GZI")]
+    index_output: Option<PathBuf>,
+
+    /// Begin indexed decompression at this uncompressed offset
+    #[arg(short = 'b', long, value_name = "OFFSET")]
+    offset: Option<u64>,
+
+    /// Emit at most this many uncompressed bytes
+    #[arg(short = 's', long, value_name = "BYTES")]
+    size: Option<u64>,
+
+    /// Replace existing named outputs
+    #[arg(short, long)]
+    force: bool,
+}
+
+pub fn execute(arguments: Arguments, json: bool) -> Result<Summary> {
+    let mode = if arguments.decompress {
+        Mode::Decompress
+    } else if arguments.test {
+        Mode::Test
+    } else if arguments.reindex {
+        Mode::Reindex
+    } else {
+        Mode::Compress
+    };
+    if mode != Mode::Compress
+        && (arguments.level.is_some() || arguments.threads.is_some() || arguments.binary)
+    {
+        return Err(config(
+            "compression level, threads, and --binary are valid only for compression",
+        ));
+    }
+    if matches!(mode, Mode::Compress | Mode::Decompress) {
+        require_named_json_output(json, arguments.output.as_deref(), "BGZF data")?;
+    }
+    run(&RunOptions {
+        mode,
+        input: arguments.input,
+        output: arguments.output,
+        index_input: arguments.index_input,
+        index_output: arguments.index_output,
+        offset: arguments.offset,
+        size: arguments.size,
+        compression: CompressOptions {
+            level: arguments.level.unwrap_or(6),
+            workers: arguments.threads.unwrap_or(NonZero::<usize>::MIN),
+            text: !arguments.binary,
+        },
+        force: arguments.force,
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -124,7 +225,7 @@ fn run_decompress(options: &RunOptions) -> Result<Summary> {
             let index_path = options
                 .index_input
                 .clone()
-                .unwrap_or_else(|| sidecar_path(input_path));
+                .unwrap_or_else(|| sidecar_path(input_path, "gzi"));
             ensure_named(&index_path, "index input")?;
             if let Some(output) = named_path(options.output.as_deref()) {
                 reject_output_alias(output, [input_path, index_path.as_path()])?;
@@ -174,7 +275,7 @@ fn run_reindex(options: &RunOptions) -> Result<Summary> {
     let output = options
         .index_output
         .clone()
-        .unwrap_or_else(|| sidecar_path(input_path));
+        .unwrap_or_else(|| sidecar_path(input_path, "gzi"));
     ensure_named(&output, "index output")?;
     reject_output_alias(&output, [input_path])?;
     ensure_replaceable(&output, options.force)?;
@@ -278,41 +379,12 @@ fn named_input<'a>(path: &'a Path, operation: &str) -> Result<&'a Path> {
     }
 }
 
-fn named_path(path: Option<&Path>) -> Option<&Path> {
-    path.filter(|path| *path != Path::new("-"))
-}
-
 fn ensure_named(path: &Path, role: &str) -> Result<()> {
     if path == Path::new("-") {
         Err(config(format!("{role} must be a named file")))
     } else {
         Ok(())
     }
-}
-
-fn ensure_replaceable(path: &Path, force: bool) -> Result<()> {
-    match fs::metadata(path) {
-        Ok(metadata) if !metadata.is_file() => Err(RsomicsError::InvalidInput(format!(
-            "output {} is not a regular file",
-            path.display()
-        ))),
-        Ok(_) if !force => Err(config(format!(
-            "output {} already exists; use --force to replace it",
-            path.display()
-        ))),
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(RsomicsError::Io(io::Error::new(
-            error.kind(),
-            format!("inspecting output {}: {error}", path.display()),
-        ))),
-    }
-}
-
-fn sidecar_path(path: &Path) -> PathBuf {
-    let mut value = path.as_os_str().to_os_string();
-    value.push(".gzi");
-    PathBuf::from(value)
 }
 
 fn reject_set<T>(value: Option<T>, flag: &str, operation: &str) -> Result<()> {
