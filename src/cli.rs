@@ -38,7 +38,7 @@ enum Command {
 #[derive(Debug, Serialize)]
 #[serde(tag = "command", content = "report", rename_all = "snake_case")]
 enum CommandReport {
-    Bgzip(bgzip::Summary),
+    Bgzip(crate::bgzip::Summary),
     Tabix(tabix::Report),
 }
 

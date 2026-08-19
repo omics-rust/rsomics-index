@@ -1,8 +1,9 @@
 use std::io::{self, Cursor, Read, Write};
 use std::num::NonZero;
 
-use rsomics_index::bgzip::{CompressOptions, GziIndex, compress, decompress, decompress_indexed};
-use rsomics_index::commands::bgzip::{Mode, RunOptions, run};
+use rsomics_index::bgzip::{
+    CompressOptions, GziIndex, Mode, RunOptions, compress, decompress, decompress_indexed, run,
+};
 
 #[test]
 fn bgzf_round_trip_preserves_multiblock_input() {

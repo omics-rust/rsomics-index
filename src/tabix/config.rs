@@ -11,20 +11,29 @@ use noodles::csi::binning_index::index::header::format::{
 use super::{Record, record, trim_line_end};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Recognized tabix record format.
 pub enum Preset {
+    /// BED records.
     Bed,
+    /// GFF or GTF records.
     Gff,
+    /// SAM records.
     Sam,
+    /// VCF records.
     Vcf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Coordinate convention used by custom tabular records.
 pub enum CoordinateSystem {
+    /// One-based coordinates with an inclusive end.
     OneBasedInclusive,
+    /// Zero-based coordinates with an exclusive end.
     ZeroBasedHalfOpen,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Checked column and coordinate configuration for tabix records.
 pub struct Config {
     pub(super) preset: Option<Preset>,
     pub(super) sequence: NonZero<usize>,
@@ -36,6 +45,7 @@ pub struct Config {
 }
 
 impl Config {
+    /// Returns the canonical configuration for a recognized preset.
     pub fn from_preset(preset: Preset) -> Self {
         let (sequence, begin, end, coordinates, comment) = match preset {
             Preset::Bed => (1, 2, Some(3), CoordinateSystem::ZeroBasedHalfOpen, b'#'),
@@ -54,6 +64,7 @@ impl Config {
         }
     }
 
+    /// Creates a checked custom tabular-record configuration.
     pub fn custom(
         sequence: usize,
         begin: usize,
@@ -85,6 +96,7 @@ impl Config {
         })
     }
 
+    /// Detects a preset from a path, headers, and a bounded data sample.
     pub fn detect(path: Option<&Path>, sample: &[u8]) -> Result<Self> {
         let mut header = None;
         let mut data = None;
@@ -139,7 +151,7 @@ impl Config {
         Ok(Self::from_preset(preset))
     }
 
-    pub fn parse<'a>(&self, line: &'a [u8], line_no: u64) -> Result<Record<'a>> {
+    pub(crate) fn parse<'a>(&self, line: &'a [u8], line_no: u64) -> Result<Record<'a>> {
         record::parse(self, line, line_no)
     }
 
@@ -192,34 +204,41 @@ impl Config {
         trim_line_end(line).first() == Some(&self.comment)
     }
 
-    pub fn is_meta(&self, line_no: u64, line: &[u8]) -> bool {
+    pub(crate) fn is_meta(&self, line_no: u64, line: &[u8]) -> bool {
         line_no <= self.skip || trim_line_end(line).first() == Some(&self.comment)
     }
 
+    /// Returns the recognized preset, if this is not a custom configuration.
     pub fn preset(&self) -> Option<Preset> {
         self.preset
     }
 
+    /// Returns the one-based reference-name column.
     pub fn sequence_column(&self) -> usize {
         self.sequence.get()
     }
 
+    /// Returns the one-based start-coordinate column.
     pub fn begin_column(&self) -> usize {
         self.begin.get()
     }
 
+    /// Returns the optional one-based end-coordinate column.
     pub fn end_column(&self) -> Option<usize> {
         self.end.map(NonZero::get)
     }
 
+    /// Returns the configured coordinate convention.
     pub fn coordinate_system(&self) -> CoordinateSystem {
         self.coordinates
     }
 
+    /// Returns the header and comment prefix byte.
     pub fn comment(&self) -> u8 {
         self.comment
     }
 
+    /// Returns the number of leading lines skipped before parsing records.
     pub fn skip(&self) -> u64 {
         self.skip
     }
@@ -283,13 +302,77 @@ fn merge_hint(target: &mut Option<Preset>, value: Preset, source: &str) -> Resul
     }
 }
 
-fn invalid(message: impl Into<String>) -> RsomicsError {
-    RsomicsError::InvalidInput(message.into())
-}
-
 fn header_column(index: usize, name: &str) -> Result<NonZero<usize>> {
     index
         .checked_add(1)
         .and_then(NonZero::new)
         .ok_or_else(|| invalid(format!("index header {name} column overflows usize")))
+}
+
+fn invalid(message: impl Into<String>) -> RsomicsError {
+    RsomicsError::InvalidInput(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detection_uses_format_evidence_and_rejects_ambiguity() {
+        let fixtures = [
+            (
+                "records.bed.gz",
+                include_bytes!("../../tests/golden/records.bed").as_slice(),
+                Preset::Bed,
+            ),
+            (
+                "records.gff3",
+                include_bytes!("../../tests/golden/records.gff").as_slice(),
+                Preset::Gff,
+            ),
+            (
+                "records.sam",
+                include_bytes!("../../tests/golden/records.sam").as_slice(),
+                Preset::Sam,
+            ),
+            (
+                "records.vcf.bgz",
+                include_bytes!("../../tests/golden/records.vcf").as_slice(),
+                Preset::Vcf,
+            ),
+        ];
+
+        for (name, sample, expected) in fixtures {
+            let config = Config::detect(Some(Path::new(name)), sample).unwrap();
+            assert_eq!(config.preset(), Some(expected));
+        }
+
+        let ambiguous = b"read1\t0\tchr1\t1\t60\t5M\t*\t0\t0\tA\tF";
+        let error = Config::detect(None, ambiguous).unwrap_err();
+        assert!(error.to_string().contains("--preset"), "{error}");
+        assert_eq!(
+            Config::detect(Some(Path::new("empty.bed")), b"")
+                .unwrap()
+                .preset(),
+            Some(Preset::Bed)
+        );
+        assert!(Config::detect(None, b"").is_err());
+
+        let header_only = b"##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n";
+        assert_eq!(
+            Config::detect(None, header_only).unwrap().preset(),
+            Some(Preset::Vcf)
+        );
+    }
+
+    #[test]
+    fn detection_rejects_conflicting_header_and_extension() {
+        let error = Config::detect(
+            Some(Path::new("calls.bed")),
+            include_bytes!("../../tests/golden/records.vcf"),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("conflict"), "{error}");
+    }
 }

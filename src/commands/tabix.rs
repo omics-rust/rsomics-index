@@ -7,18 +7,19 @@ use clap::{Args, Subcommand, ValueEnum};
 use rsomics_common::{Context, Result, RsomicsError, reject_output_alias, write_output};
 use serde::Serialize;
 
+use crate::output::{ensure_replaceable, named_path, sidecar_path};
 use crate::tabix::{
     BuildOptions, BuildSummary, Config, CoordinateSystem, IndexKind, ListSummary, Preset,
     QueryOptions, QuerySummary, build_named, list, query,
 };
 
-use super::{ensure_replaceable, named_path, require_named_json_output, sidecar_path};
+use super::require_named_json_output;
 
 const DEFAULT_CACHE_BYTES: usize = 10 * 1024 * 1024;
 const DETECTION_SAMPLE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Args)]
-pub struct Arguments {
+pub(crate) struct Arguments {
     #[command(subcommand)]
     operation: Operation,
 }
@@ -168,13 +169,13 @@ enum PresetArgument {
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "operation", content = "summary", rename_all = "snake_case")]
-pub enum Report {
+pub(crate) enum Report {
     Build(BuildSummary),
     Query(QuerySummary),
     List(ListSummary),
 }
 
-pub fn execute(arguments: Arguments, json: bool) -> Result<Report> {
+pub(crate) fn execute(arguments: Arguments, json: bool) -> Result<Report> {
     match arguments.operation {
         Operation::Build(arguments) => run_build(arguments).map(Report::Build),
         Operation::Query(arguments) => run_query(arguments, json).map(Report::Query),

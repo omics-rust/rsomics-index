@@ -5,11 +5,13 @@ use noodles_bgzf::VirtualPosition;
 use super::frame::{EOF_BLOCK, frame_uncompressed_size, invalid, read_frame};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Checked GZI block offsets for indexed BGZF decompression.
 pub struct GziIndex {
     entries: Vec<(u64, u64)>,
 }
 
 impl GziIndex {
+    /// Scans a complete BGZF stream and builds its GZI entries.
     pub fn scan<R>(source: &mut R) -> io::Result<Self>
     where
         R: Read + Seek,
@@ -55,6 +57,7 @@ impl GziIndex {
         Ok(Self { entries })
     }
 
+    /// Reads and validates a complete GZI stream.
     pub fn read<R>(mut source: R) -> io::Result<Self>
     where
         R: Read,
@@ -95,6 +98,7 @@ impl GziIndex {
         Ok(Self { entries })
     }
 
+    /// Writes this index in GZI format and flushes the sink.
     pub fn write<W>(&self, mut sink: W) -> io::Result<()>
     where
         W: Write,
@@ -107,6 +111,7 @@ impl GziIndex {
         sink.flush()
     }
 
+    /// Resolves a zero-based uncompressed byte offset to a BGZF virtual position.
     pub fn query(&self, offset: u64) -> io::Result<VirtualPosition> {
         let position = self
             .entries
@@ -122,6 +127,7 @@ impl GziIndex {
             .ok_or_else(|| invalid("compressed offset exceeds the BGZF virtual-position limit"))
     }
 
+    /// Returns `(compressed, uncompressed)` offsets for non-origin blocks.
     pub fn entries(&self) -> &[(u64, u64)] {
         &self.entries
     }

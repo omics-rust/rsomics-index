@@ -18,16 +18,27 @@ use self::selection::{Selection, TargetSet, read_selections};
 use super::{Config, LoadedIndex, load_index};
 
 #[derive(Debug, Clone)]
+/// Region, target, output, and BGZF settings for a tabix query.
 pub struct QueryOptions {
+    /// Ordered one-based inclusive region expressions.
     pub regions: Vec<String>,
+    /// Optional file containing additional ordered regions.
     pub regions_file: Option<PathBuf>,
+    /// Optional BED or one-based target file applied as a second filter.
     pub targets_file: Option<PathBuf>,
+    /// Explicit TBI or CSI sidecar path.
     pub index: Option<PathBuf>,
+    /// Whether to emit leading header lines before records.
     pub print_header: bool,
+    /// Whether to emit only leading header lines.
     pub header_only: bool,
+    /// Whether each physical record may be emitted at most once.
     pub unique: bool,
+    /// Whether to prefix each region result with a region marker.
     pub separate_regions: bool,
+    /// Number of BGZF decoding workers.
     pub workers: NonZero<usize>,
+    /// Maximum bytes retained in the decompressed-block cache.
     pub cache_bytes: usize,
 }
 
@@ -49,17 +60,24 @@ impl Default for QueryOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// Counts for a completed tabix query.
 pub struct QuerySummary {
+    /// Data records emitted.
     pub records: u64,
+    /// Header lines emitted.
     pub header_lines: u64,
+    /// Ordered region selections evaluated.
     pub selections: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// Count for a completed reference-name listing.
 pub struct ListSummary {
+    /// Reference names emitted.
     pub references: u64,
 }
 
+/// Queries indexed BGZF data and writes matching records to `output`.
 pub fn query<W>(input: &Path, output: &mut W, options: &QueryOptions) -> Result<QuerySummary>
 where
     W: Write + ?Sized,
@@ -150,6 +168,7 @@ where
     })
 }
 
+/// Writes indexed reference names in stored order.
 pub fn list<W>(input: &Path, output: &mut W, explicit_index: Option<&Path>) -> Result<ListSummary>
 where
     W: Write + ?Sized,

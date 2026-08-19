@@ -1,9 +1,7 @@
 use std::fs::File;
-use std::io::{self, Cursor, Read, Seek, SeekFrom};
-use std::ops::RangeInclusive;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use noodles::core::Position;
 use noodles::core::region::Interval;
 use noodles::csi::binning_index::BinningIndex;
 use noodles::csi::binning_index::index::Header;
@@ -12,8 +10,6 @@ use noodles::{csi, tabix};
 use rsomics_common::{Context, Result, RsomicsError};
 
 use crate::bgzip::reader::TailReader;
-
-use super::IndexKind;
 
 pub struct LoadedIndex {
     inner: Inner,
@@ -26,16 +22,7 @@ enum Inner {
 }
 
 impl LoadedIndex {
-    pub fn read<R>(mut source: R) -> Result<Self>
-    where
-        R: Read,
-    {
-        let mut bytes = Vec::new();
-        source.read_to_end(&mut bytes)?;
-        Self::read_seek(Cursor::new(bytes))
-    }
-
-    pub fn read_seek<R>(mut source: R) -> Result<Self>
+    fn read_seek<R>(mut source: R) -> Result<Self>
     where
         R: Read + Seek,
     {
@@ -71,15 +58,6 @@ impl LoadedIndex {
         Ok(Self { inner, header })
     }
 
-    pub fn kind(&self) -> IndexKind {
-        match &self.inner {
-            Inner::Tbi(_) => IndexKind::Tbi,
-            Inner::Csi(index) => IndexKind::Csi {
-                min_shift: index.min_shift(),
-            },
-        }
-    }
-
     pub fn reference_names(&self) -> Vec<&[u8]> {
         self.header
             .reference_sequence_names()
@@ -90,15 +68,6 @@ impl LoadedIndex {
 
     pub fn header(&self) -> &Header {
         &self.header
-    }
-
-    pub fn query(&self, reference_id: usize, interval: RangeInclusive<u64>) -> Result<Vec<Chunk>> {
-        let start = position(*interval.start())?;
-        let end = position(*interval.end())?;
-        if end < start {
-            return Err(invalid("query end is smaller than start"));
-        }
-        self.query_interval(reference_id, (start..=end).into())
     }
 
     pub(super) fn query_interval(
@@ -240,11 +209,6 @@ fn sidecar_path(data: &Path, extension: &str) -> PathBuf {
     value.push(".");
     value.push(extension);
     PathBuf::from(value)
-}
-
-fn position(value: u64) -> Result<Position> {
-    let value = usize::try_from(value).map_err(|_| invalid("coordinate exceeds usize"))?;
-    Position::try_from(value).map_err(|error| invalid(error.to_string()))
 }
 
 fn invalid(message: impl Into<String>) -> RsomicsError {

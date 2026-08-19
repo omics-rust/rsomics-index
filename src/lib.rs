@@ -1,7 +1,14 @@
-mod cli;
+#![deny(missing_docs)]
 
+//! Checked BGZF and tabix workflows used by the `rsomics-index` product.
+
+mod cli;
+mod commands;
+mod output;
+
+/// BGZF compression, decompression, and GZI workflows.
 pub mod bgzip;
-pub mod commands;
+/// Tabix configuration, index construction, and query workflows.
 pub mod tabix;
 
 #[doc(hidden)]

@@ -31,24 +31,38 @@ const MIN_MARKER_DISTANCE: u64 = 0x10000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Tabix index encoding to build.
 pub enum IndexKind {
+    /// A TBI index with the fixed `2^29` coordinate limit.
     Tbi,
-    Csi { min_shift: u8 },
+    /// A CSI index with a caller-selected minimum interval shift.
+    Csi {
+        /// Minimum interval shift in the inclusive range 1 through 31.
+        min_shift: u8,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Format and encoding options for tabix index construction.
 pub struct BuildOptions {
+    /// Checked record-format configuration.
     pub config: Config,
+    /// Index encoding to create.
     pub kind: IndexKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// Counts and encoding for a completed index build.
 pub struct BuildSummary {
+    /// Index encoding written.
     pub kind: IndexKind,
+    /// Data records indexed.
     pub records: u64,
+    /// Distinct references indexed.
     pub references: u64,
 }
 
+/// Builds an index into an already-open regular file.
 pub fn build(input: &Path, output: &mut File, options: &BuildOptions) -> Result<BuildSummary> {
     let accumulated = accumulate(input, options)?;
     let summary = BuildSummary {
@@ -67,6 +81,7 @@ pub fn build(input: &Path, output: &mut File, options: &BuildOptions) -> Result<
     Ok(summary)
 }
 
+/// Builds and transactionally commits a named index.
 pub fn build_named(input: &Path, output: &Path, options: &BuildOptions) -> Result<BuildSummary> {
     reject_output_alias(output, [input])?;
     write_atomic(output, |file| build(input, file, options))
