@@ -79,14 +79,14 @@ where
     })
 }
 
-struct TailReader<R> {
+pub(crate) struct TailReader<R> {
     inner: R,
     frames: FrameTracker,
     bytes_read: u64,
 }
 
 impl<R> TailReader<R> {
-    fn new(inner: R) -> Self {
+    pub(crate) fn new(inner: R) -> Self {
         Self {
             inner,
             frames: FrameTracker::default(),
@@ -94,7 +94,7 @@ impl<R> TailReader<R> {
         }
     }
 
-    fn has_complete_eof(&self) -> bool {
+    pub(crate) fn has_complete_eof(&self) -> bool {
         self.frames.saw_eof && self.frames.frame.is_empty()
     }
 }
@@ -186,7 +186,7 @@ impl FrameTracker {
     }
 }
 
-fn normalize_truncation(error: io::Error) -> io::Error {
+pub(crate) fn normalize_truncation(error: io::Error) -> io::Error {
     if error.kind() == io::ErrorKind::UnexpectedEof {
         io::Error::new(
             io::ErrorKind::UnexpectedEof,

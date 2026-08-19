@@ -199,7 +199,7 @@ fn vcf_info_end(info: &[u8], start: u64) -> Result<Option<u64>> {
     Ok(end)
 }
 
-fn parse_u64(bytes: &[u8]) -> Result<u64> {
+pub(super) fn parse_u64(bytes: &[u8]) -> Result<u64> {
     if bytes.is_empty() {
         return Err(invalid("integer field is empty"));
     }

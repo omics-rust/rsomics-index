@@ -1,5 +1,9 @@
-use std::path::Path;
+use std::fs::File;
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
 
+use rsomics_index::bgzip::{CompressOptions, compress, decompress};
+use rsomics_index::tabix::{BuildOptions, IndexKind, LoadedIndex, build, build_named, load_index};
 use rsomics_index::tabix::{Config, CoordinateSystem, Preset, Record, SortedState};
 
 #[test]
@@ -210,6 +214,243 @@ fn all_fixture_records_parse_in_sorted_order() {
             sorted.push(&record, line_no).unwrap();
         }
     }
+}
+
+#[test]
+fn builds_queryable_tbi_and_csi() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = bgzip_fixture(
+        directory.path(),
+        "records.vcf.gz",
+        include_bytes!("golden/records.vcf"),
+    );
+
+    for kind in [IndexKind::Tbi, IndexKind::Csi { min_shift: 14 }] {
+        let output = directory.path().join(match kind {
+            IndexKind::Tbi => "records.vcf.gz.tbi",
+            IndexKind::Csi { .. } => "records.vcf.gz.csi",
+        });
+        let mut file = File::create(&output).unwrap();
+        let summary = build(
+            &input,
+            &mut file,
+            &BuildOptions {
+                config: Config::from_preset(Preset::Vcf),
+                kind,
+            },
+        )
+        .unwrap();
+        drop(file);
+        let bytes = std::fs::read(output).unwrap();
+        let loaded = LoadedIndex::read(Cursor::new(bytes)).unwrap();
+
+        assert_eq!(summary.records, 3);
+        assert_eq!(summary.references, 2);
+        assert_eq!(
+            loaded.reference_names(),
+            vec![b"chr1".as_slice(), b"chr2".as_slice()]
+        );
+        assert!(!loaded.query(0, 1..=20).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn malformed_late_record_does_not_replace_index() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = bgzip_fixture(
+        directory.path(),
+        "unsorted.bed.gz",
+        b"chr1\t0\t10\nchr1\t20\t30\nchr1\t15\t25\n",
+    );
+    let output = directory.path().join("unsorted.bed.gz.tbi");
+    std::fs::write(&output, b"existing index").unwrap();
+    let options = BuildOptions {
+        config: Config::from_preset(Preset::Bed),
+        kind: IndexKind::Tbi,
+    };
+
+    let error = build_named(&input, &output, &options).unwrap_err();
+
+    assert!(error.to_string().contains("sorted"), "{error}");
+    assert_eq!(std::fs::read(output).unwrap(), b"existing index");
+}
+
+#[test]
+fn tbi_accepts_its_last_base_and_rejects_the_next() {
+    let directory = tempfile::tempdir().unwrap();
+    let options = BuildOptions {
+        config: Config::from_preset(Preset::Bed),
+        kind: IndexKind::Tbi,
+    };
+    let valid = bgzip_fixture(
+        directory.path(),
+        "boundary.bed.gz",
+        b"chr1\t536870911\t536870912\n",
+    );
+    let mut valid_output = File::create(directory.path().join("boundary.bed.gz.tbi")).unwrap();
+
+    build(&valid, &mut valid_output, &options).unwrap();
+
+    let invalid = bgzip_fixture(
+        directory.path(),
+        "past-boundary.bed.gz",
+        b"chr1\t536870912\t536870913\n",
+    );
+    let mut invalid_output =
+        File::create(directory.path().join("past-boundary.bed.gz.tbi")).unwrap();
+    let error = build(&invalid, &mut invalid_output, &options).unwrap_err();
+    assert!(
+        error.to_string().contains("TBI coordinate limit"),
+        "{error}"
+    );
+}
+
+#[test]
+fn truncated_bgzf_does_not_replace_index() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = bgzip_fixture(directory.path(), "truncated.bed.gz", b"chr1\t0\t10\n");
+    let mut bytes = std::fs::read(&input).unwrap();
+    bytes.truncate(bytes.len() - 1);
+    std::fs::write(&input, bytes).unwrap();
+    let output = directory.path().join("truncated.bed.gz.tbi");
+    std::fs::write(&output, b"existing index").unwrap();
+
+    let error = build_named(
+        &input,
+        &output,
+        &BuildOptions {
+            config: Config::from_preset(Preset::Bed),
+            kind: IndexKind::Tbi,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("EOF"), "{error}");
+    assert_eq!(std::fs::read(output).unwrap(), b"existing index");
+}
+
+#[test]
+fn index_loader_rejects_decompressed_trailing_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = bgzip_fixture(directory.path(), "records.bed.gz", b"chr1\t0\t10\n");
+    let index = directory.path().join("records.bed.gz.tbi");
+    build_named(
+        &input,
+        &index,
+        &BuildOptions {
+            config: Config::from_preset(Preset::Bed),
+            kind: IndexKind::Tbi,
+        },
+    )
+    .unwrap();
+    assert_eq!(load_index(&input, None).unwrap().kind(), IndexKind::Tbi);
+
+    let mut raw = Vec::new();
+    decompress(Cursor::new(std::fs::read(index).unwrap()), &mut raw, None).unwrap();
+    raw.extend_from_slice(b"trailing");
+    let options = CompressOptions {
+        text: false,
+        ..CompressOptions::default()
+    };
+    let (compressed, _) = compress(raw.as_slice(), Vec::new(), &options).unwrap();
+
+    let Err(error) = LoadedIndex::read(Cursor::new(compressed)) else {
+        panic!("index with trailing bytes was accepted");
+    };
+    assert!(error.to_string().contains("trailing"), "{error}");
+}
+
+#[test]
+fn index_loader_rejects_truncation_and_post_eof_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = bgzip_fixture(directory.path(), "records.gff.gz", b"chr1\ts\tg\t1\t9\n");
+    let index = directory.path().join("records.gff.gz.tbi");
+    build_named(
+        &input,
+        &index,
+        &BuildOptions {
+            config: Config::from_preset(Preset::Gff),
+            kind: IndexKind::Tbi,
+        },
+    )
+    .unwrap();
+    let bytes = std::fs::read(index).unwrap();
+
+    let mut truncated = bytes.clone();
+    truncated.pop();
+    assert!(LoadedIndex::read(Cursor::new(truncated)).is_err());
+
+    let mut post_eof = bytes;
+    post_eof.push(0);
+    let Err(error) = LoadedIndex::read(Cursor::new(post_eof)) else {
+        panic!("index with post-EOF bytes was accepted");
+    };
+    assert!(error.to_string().contains("EOF marker"), "{error}");
+}
+
+#[test]
+fn empty_and_header_only_inputs_produce_empty_indexes() {
+    let directory = tempfile::tempdir().unwrap();
+    let cases = [
+        ("empty.bed.gz", b"".as_slice(), Preset::Bed),
+        (
+            "header.vcf.gz",
+            b"##fileformat=VCFv4.3\n##contig=<ID=chr1,length=1000>\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n".as_slice(),
+            Preset::Vcf,
+        ),
+    ];
+
+    for (name, data, preset) in cases {
+        let input = bgzip_fixture(directory.path(), name, data);
+        for kind in [IndexKind::Tbi, IndexKind::Csi { min_shift: 14 }] {
+            let output = directory.path().join(format!("{name}.{kind:?}"));
+            let mut file = File::create(&output).unwrap();
+            let summary = build(
+                &input,
+                &mut file,
+                &BuildOptions {
+                    config: Config::from_preset(preset),
+                    kind,
+                },
+            )
+            .unwrap();
+            drop(file);
+            let loaded = LoadedIndex::read(File::open(output).unwrap()).unwrap();
+            assert_eq!(summary.records, 0);
+            assert_eq!(summary.references, 0);
+            assert!(loaded.reference_names().is_empty());
+        }
+    }
+}
+
+#[test]
+fn csi_minimum_shift_is_checked_before_output_is_replaced() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = bgzip_fixture(directory.path(), "records.bed.gz", b"chr1\t0\t10\n");
+
+    for min_shift in [0, 32] {
+        let output = directory.path().join(format!("invalid-{min_shift}.csi"));
+        std::fs::write(&output, b"existing index").unwrap();
+        let error = build_named(
+            &input,
+            &output,
+            &BuildOptions {
+                config: Config::from_preset(Preset::Bed),
+                kind: IndexKind::Csi { min_shift },
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("minimum shift"), "{error}");
+        assert_eq!(std::fs::read(output).unwrap(), b"existing index");
+    }
+}
+
+fn bgzip_fixture(directory: &Path, name: &str, data: &[u8]) -> PathBuf {
+    let path = directory.join(name);
+    let output = File::create(&path).unwrap();
+    let (output, _) = compress(data, output, &CompressOptions::default()).unwrap();
+    drop(output);
+    path
 }
 
 fn record(reference: &[u8], start: u64, end: u64) -> Record<'_> {

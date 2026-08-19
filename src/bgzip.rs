@@ -4,7 +4,7 @@ use std::ops::Range;
 
 mod frame;
 mod index;
-mod reader;
+pub(crate) mod reader;
 mod writer;
 
 pub use index::GziIndex;
