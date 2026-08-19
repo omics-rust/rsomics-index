@@ -1,11 +1,13 @@
 mod build;
 mod config;
 mod index;
+mod query;
 mod record;
 
 pub use build::{BuildOptions, BuildSummary, IndexKind, build, build_named};
 pub use config::{Config, CoordinateSystem, Preset};
 pub use index::{LoadedIndex, load_index};
+pub use query::{ListSummary, QueryOptions, QuerySummary, list, query};
 pub use record::{Record, SortedState};
 
 fn trim_line_end(mut line: &[u8]) -> &[u8] {

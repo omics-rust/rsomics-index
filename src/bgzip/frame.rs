@@ -1,11 +1,13 @@
 use std::io::{self, Read};
 
-pub(super) const EOF_BLOCK: [u8; 28] = [
+use libdeflater::Decompressor;
+
+pub(crate) const EOF_BLOCK: [u8; 28] = [
     0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, b'B', b'C', 0x02, 0x00,
     0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-pub(super) fn read_frame<R>(source: &mut R) -> io::Result<Vec<u8>>
+pub(crate) fn read_frame<R>(source: &mut R) -> io::Result<Vec<u8>>
 where
     R: Read,
 {
@@ -65,7 +67,7 @@ pub(super) fn parse_block_size(header: &[u8]) -> io::Result<usize> {
     block_size.ok_or_else(|| invalid("BGZF header has no BC subfield"))
 }
 
-pub(super) fn frame_uncompressed_size(frame: &[u8]) -> io::Result<u64> {
+pub(crate) fn frame_uncompressed_size(frame: &[u8]) -> io::Result<u64> {
     let offset = frame
         .len()
         .checked_sub(4)
@@ -78,6 +80,26 @@ pub(super) fn frame_uncompressed_size(frame: &[u8]) -> io::Result<u64> {
         return Err(invalid("BGZF block exceeds the uncompressed-size limit"));
     }
     Ok(size)
+}
+
+pub(crate) fn decode_frame(decompressor: &mut Decompressor, frame: &[u8]) -> io::Result<Vec<u8>> {
+    let size = usize::try_from(frame_uncompressed_size(frame)?)
+        .map_err(|_| invalid("BGZF block size exceeds usize"))?;
+    if size == 0 {
+        return if frame == EOF_BLOCK {
+            Ok(Vec::new())
+        } else {
+            Err(invalid("noncanonical empty BGZF block"))
+        };
+    }
+    let mut data = vec![0; size];
+    let written = decompressor
+        .gzip_decompress(frame, &mut data)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if written != size {
+        return Err(invalid("BGZF trailer size does not match decoded data"));
+    }
+    Ok(data)
 }
 
 pub(super) fn invalid(message: &str) -> io::Error {

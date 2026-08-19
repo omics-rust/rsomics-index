@@ -4,6 +4,7 @@ use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 use noodles::core::Position;
+use noodles::core::region::Interval;
 use noodles::csi::binning_index::BinningIndex;
 use noodles::csi::binning_index::index::Header;
 use noodles::csi::binning_index::index::reference_sequence::bin::Chunk;
@@ -40,7 +41,9 @@ impl LoadedIndex {
     {
         let mut probe = noodles_bgzf::io::Reader::new(&mut source);
         let mut magic = [0; 4];
-        probe.read_exact(&mut magic)?;
+        probe
+            .read_exact(&mut magic)
+            .map_err(normalize_index_truncation)?;
         drop(probe);
         source.seek(SeekFrom::Start(0))?;
 
@@ -55,6 +58,16 @@ impl LoadedIndex {
         }
         .cloned()
         .ok_or_else(|| invalid("index has no tabix header"))?;
+        validate_header(&header)?;
+        let reference_count = match &inner {
+            Inner::Tbi(index) => index.reference_sequences().len(),
+            Inner::Csi(index) => index.reference_sequences().len(),
+        };
+        if reference_count != header.reference_sequence_names().len() {
+            return Err(invalid(
+                "index reference count does not match its reference names",
+            ));
+        }
         Ok(Self { inner, header })
     }
 
@@ -85,9 +98,17 @@ impl LoadedIndex {
         if end < start {
             return Err(invalid("query end is smaller than start"));
         }
+        self.query_interval(reference_id, (start..=end).into())
+    }
+
+    pub(super) fn query_interval(
+        &self,
+        reference_id: usize,
+        interval: Interval,
+    ) -> Result<Vec<Chunk>> {
         match &self.inner {
-            Inner::Tbi(index) => index.query(reference_id, (start..=end).into()),
-            Inner::Csi(index) => index.query(reference_id, (start..=end).into()),
+            Inner::Tbi(index) => index.query(reference_id, interval),
+            Inner::Csi(index) => index.query(reference_id, interval),
         }
         .map_err(RsomicsError::Io)
     }
@@ -98,7 +119,10 @@ where
     R: Read,
 {
     let mut reader = tabix::io::Reader::new(TailReader::new(source));
-    let index = reader.read_index().rs_context("reading TBI payload")?;
+    let index = reader
+        .read_index()
+        .map_err(normalize_index_truncation)
+        .rs_context("reading TBI payload")?;
     finish_reader(reader.into_inner())?;
     Ok(index)
 }
@@ -108,7 +132,10 @@ where
     R: Read,
 {
     let mut reader = csi::io::Reader::new(TailReader::new(source));
-    let index = reader.read_index().rs_context("reading CSI payload")?;
+    let index = reader
+        .read_index()
+        .map_err(normalize_index_truncation)
+        .rs_context("reading CSI payload")?;
     finish_reader(reader.into_inner())?;
     Ok(index)
 }
@@ -118,11 +145,19 @@ where
     R: Read,
 {
     let mut trailing = [0];
-    if reader.read(&mut trailing)? != 0 {
+    if reader
+        .read(&mut trailing)
+        .map_err(normalize_index_truncation)?
+        != 0
+    {
         return Err(invalid("index has trailing decompressed bytes"));
     }
     let mut tracked = reader.into_inner();
-    if tracked.read(&mut trailing)? != 0 {
+    if tracked
+        .read(&mut trailing)
+        .map_err(normalize_index_truncation)?
+        != 0
+    {
         return Err(invalid("index has trailing compressed bytes"));
     }
     if !tracked.has_complete_eof() {
@@ -157,9 +192,47 @@ pub fn load_index(data: &Path, explicit: Option<&Path>) -> Result<LoadedIndex> {
             }
         }
     };
+    validate_freshness(data, &path)?;
     let file =
         File::open(&path).rs_with_context(|| format!("opening tabix index {}", path.display()))?;
     LoadedIndex::read_seek(file).rs_with_context(|| format!("reading index {}", path.display()))
+}
+
+fn validate_header(header: &Header) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for name in header.reference_sequence_names() {
+        let name: &[u8] = name.as_ref();
+        if name.is_empty()
+            || name
+                .iter()
+                .any(|byte| matches!(byte, 0 | b'\t' | b'\n' | b'\r'))
+        {
+            return Err(invalid("index contains an invalid reference name"));
+        }
+        if !seen.insert(name) {
+            return Err(invalid("index contains duplicate reference names"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_freshness(data: &Path, index: &Path) -> Result<()> {
+    let data_modified = std::fs::metadata(data)
+        .rs_with_context(|| format!("reading data metadata {}", data.display()))?
+        .modified()
+        .rs_with_context(|| format!("reading data modification time {}", data.display()))?;
+    let index_modified = std::fs::metadata(index)
+        .rs_with_context(|| format!("reading index metadata {}", index.display()))?
+        .modified()
+        .rs_with_context(|| format!("reading index modification time {}", index.display()))?;
+    if data_modified > index_modified {
+        return Err(invalid(format!(
+            "index {} is older than data {}",
+            index.display(),
+            data.display()
+        )));
+    }
+    Ok(())
 }
 
 fn sidecar_path(data: &Path, extension: &str) -> PathBuf {
@@ -176,4 +249,15 @@ fn position(value: u64) -> Result<Position> {
 
 fn invalid(message: impl Into<String>) -> RsomicsError {
     RsomicsError::InvalidInput(message.into())
+}
+
+fn normalize_index_truncation(error: io::Error) -> io::Error {
+    if error.kind() == io::ErrorKind::UnexpectedEof {
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "tabix index payload or BGZF EOF marker is truncated",
+        )
+    } else {
+        error
+    }
 }

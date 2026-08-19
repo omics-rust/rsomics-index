@@ -100,6 +100,10 @@ fn parse_inner<'a>(config: &Config, line: &'a [u8]) -> Result<Record<'a>> {
     })
 }
 
+pub(super) fn parse_unlocated<'a>(config: &Config, line: &'a [u8]) -> Result<Record<'a>> {
+    parse_inner(config, line)
+}
+
 fn normalize(config: &Config, raw_start: u64, raw_end: Option<&[u8]>) -> Result<(u64, u64)> {
     match config.coordinates {
         CoordinateSystem::OneBasedInclusive => {

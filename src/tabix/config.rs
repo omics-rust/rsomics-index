@@ -3,6 +3,11 @@ use std::path::Path;
 
 use rsomics_common::{Context, Result, RsomicsError};
 
+use noodles::csi::binning_index::index::Header;
+use noodles::csi::binning_index::index::header::format::{
+    CoordinateSystem as HeaderCoordinateSystem, Format,
+};
+
 use super::{Record, record, trim_line_end};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +143,55 @@ impl Config {
         record::parse(self, line, line_no)
     }
 
+    pub(super) fn from_header(header: &Header) -> Result<Self> {
+        let (preset, coordinates) = match header.format() {
+            Format::Sam => (Some(Preset::Sam), CoordinateSystem::OneBasedInclusive),
+            Format::Vcf => (Some(Preset::Vcf), CoordinateSystem::OneBasedInclusive),
+            Format::Generic(HeaderCoordinateSystem::Gff) => {
+                (None, CoordinateSystem::OneBasedInclusive)
+            }
+            Format::Generic(HeaderCoordinateSystem::Bed) => {
+                (None, CoordinateSystem::ZeroBasedHalfOpen)
+            }
+        };
+        let config = Self {
+            preset,
+            sequence: header_column(header.reference_sequence_name_index(), "sequence")?,
+            begin: header_column(header.start_position_index(), "begin")?,
+            end: header
+                .end_position_index()
+                .map(|index| header_column(index, "end"))
+                .transpose()?,
+            coordinates,
+            comment: header.line_comment_prefix(),
+            skip: u64::from(header.line_skip_count()),
+        };
+        if matches!(config.comment, 0 | b'\t' | b'\n' | b'\r') {
+            return Err(invalid("index header has an invalid comment marker"));
+        }
+        if let Some(preset) = preset {
+            let expected = Self::from_preset(preset);
+            if config.sequence != expected.sequence
+                || config.begin != expected.begin
+                || config.end != expected.end
+                || config.comment != expected.comment
+            {
+                return Err(invalid(format!(
+                    "index header columns are incompatible with the {preset:?} format"
+                )));
+            }
+        }
+        Ok(config)
+    }
+
+    pub(super) fn parse_unlocated<'a>(&self, line: &'a [u8]) -> Result<Record<'a>> {
+        record::parse_unlocated(self, trim_line_end(line))
+    }
+
+    pub(super) fn is_comment(&self, line: &[u8]) -> bool {
+        trim_line_end(line).first() == Some(&self.comment)
+    }
+
     pub fn is_meta(&self, line_no: u64, line: &[u8]) -> bool {
         line_no <= self.skip || trim_line_end(line).first() == Some(&self.comment)
     }
@@ -231,4 +285,11 @@ fn merge_hint(target: &mut Option<Preset>, value: Preset, source: &str) -> Resul
 
 fn invalid(message: impl Into<String>) -> RsomicsError {
     RsomicsError::InvalidInput(message.into())
+}
+
+fn header_column(index: usize, name: &str) -> Result<NonZero<usize>> {
+    index
+        .checked_add(1)
+        .and_then(NonZero::new)
+        .ok_or_else(|| invalid(format!("index header {name} column overflows usize")))
 }

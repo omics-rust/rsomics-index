@@ -2,7 +2,7 @@ use std::io::{self, Read, Write};
 use std::num::NonZero;
 use std::ops::Range;
 
-mod frame;
+pub(crate) mod frame;
 mod index;
 pub(crate) mod reader;
 mod writer;
