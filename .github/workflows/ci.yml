@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            runner: ubuntu-24.04
+          - target: linux-aarch64
+            runner: ubuntu-24.04-arm
+          - target: macos-x86_64
+            runner: macos-15-intel
+          - target: macos-aarch64
+            runner: macos-15
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust 1.91
+        uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          components: clippy,rustfmt
+
+      - name: Format
+        if: matrix.target == 'linux-x86_64'
+        run: cargo fmt --all -- --check
+
+      - name: Strict Clippy
+        if: matrix.target == 'linux-x86_64'
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Test debug
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Test release
+        run: cargo test --release --locked --all-targets --all-features
+
+      - name: Check documentation
+        if: matrix.target == 'linux-x86_64'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --no-deps --all-features
+
+      - name: Verify package
+        if: matrix.target == 'linux-x86_64'
+        run: cargo package --locked
+
+      - name: Install HTSlib oracle dependencies
+        if: matrix.target == 'linux-x86_64'
+        run: |
+          printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' \
+            | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo timeout 180 apt-get \
+            -o Acquire::Retries=2 \
+            -o Acquire::https::Timeout=20 \
+            update
+          sudo timeout 180 env DEBIAN_FRONTEND=noninteractive apt-get \
+            -o Acquire::Retries=2 \
+            -o Acquire::https::Timeout=20 \
+            install -y libbz2-dev libcurl4-openssl-dev liblzma-dev libssl-dev zlib1g-dev
+
+      - name: Build HTSlib 1.24 oracle
+        if: matrix.target == 'linux-x86_64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/htslib-1.24.tar.bz2"
+          curl --fail --location --retry 3 \
+            https://github.com/samtools/htslib/releases/download/1.24/htslib-1.24.tar.bz2 \
+            --output "$archive"
+          echo "28a8de191381c7a97a35675ceac76fa1ea95e7b678d6a2e9d600a7874e4077de  $archive" \
+            | shasum -a 256 --check
+          tar -xjf "$archive" -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP/htslib-1.24"
+          ./configure
+          make -j2 bgzip tabix
+
+      - name: Verify HTSlib oracle
+        if: matrix.target == 'linux-x86_64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          oracle="$RUNNER_TEMP/htslib-1.24"
+          test "$("$oracle/bgzip" --version | sed -n '1p')" = "bgzip (htslib) 1.24"
+          test "$("$oracle/tabix" --version | sed -n '1p')" = "tabix (htslib) 1.24"
+
+      - name: Test HTSlib compatibility
+        if: matrix.target == 'linux-x86_64'
+        env:
+          RSOMICS_HTSLIB_ORACLE_DIR: ${{ runner.temp }}/htslib-1.24
+        run: |
+          cargo test --locked --test bgzip_compat -- --ignored
+          cargo test --locked --test tabix_compat -- --ignored

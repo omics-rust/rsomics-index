@@ -328,7 +328,16 @@ fn stored_custom_columns_drive_header_and_record_queries() {
         },
     );
 
-    assert_eq!(output, "preamble\nid1\tchr1\t5\t9\n");
+    assert_eq!(output, "id1\tchr1\t5\t9\n");
+
+    let header = query_text(
+        &data,
+        QueryOptions {
+            header_only: true,
+            ..QueryOptions::default()
+        },
+    );
+    assert!(header.is_empty());
 }
 
 #[test]

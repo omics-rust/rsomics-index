@@ -271,7 +271,6 @@ where
         File::open(input).rs_with_context(|| format!("opening BGZF data {}", input.display()))?;
     let mut reader = Reader::new(TailReader::new(file));
     let mut line = Vec::new();
-    let mut line_no = 0u64;
     let mut written = 0u64;
     loop {
         line.clear();
@@ -282,11 +281,8 @@ where
         {
             break;
         }
-        line_no = line_no
-            .checked_add(1)
-            .ok_or_else(|| invalid("BGZF line count overflows u64"))?;
         let trimmed = trim_line(&line);
-        if !config.is_meta(line_no, trimmed) {
+        if !config.is_comment(trimmed) {
             break;
         }
         output.write_all(trimmed)?;
