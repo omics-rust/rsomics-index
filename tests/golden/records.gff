@@ -1,0 +1,4 @@
+##gff-version 3
+chr1	source	gene	1	10	.	+	.	ID=alpha
+chr1	source	exon	11	25	.	+	.	ID=beta
+chr2	source	gene	3	19	.	-	.	ID=gamma
