@@ -485,7 +485,9 @@ write_summary() {
                         median = NR % 2 ? value[(NR + 1) / 2] : (value[NR / 2] + value[NR / 2 + 1]) / 2
                         p99 = value[int(0.99 * NR + 0.999999)]
                         mean = sum / NR
-                        stdev = NR > 1 ? sqrt((sumsq - sum * sum / NR) / (NR - 1)) : 0
+                        variance = NR > 1 ? (sumsq - sum * sum / NR) / (NR - 1) : 0
+                        if (variance < 0) variance = 0
+                        stdev = sqrt(variance)
                         printf "%s\t%s\t%s\t%d\t%.9g\t%.9g\t%.9g\t%.9g\n", workload, tool, metric, NR, median, p99, mean, stdev
                     }
                 ' "$values" >> "$summary"

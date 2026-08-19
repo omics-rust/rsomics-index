@@ -127,6 +127,15 @@ Version 0.1 supports local files and standard streams only. It deliberately excl
 discovery, authentication, in-place input replacement, multi-input invocations, rebgzip layout
 reproduction, and metadata copying.
 
+## Performance
+
+On the 6,000,000-record release fixture, TBI and CSI construction are 1.36 times faster than
+HTSlib 1.24 and use about half the peak memory. Target-scan querying is 1.12 times faster. These
+are scoped wins, not a claim that every operation is faster: compression is close but slightly
+slower, and indexed partial reads plus region queries currently trail HTSlib. The complete
+workloads, losses, distributions, hashes, and machine provenance are in
+[`PERFORMANCE.md`](PERFORMANCE.md).
+
 ## License
 
 `rsomics-index` is available under MIT OR Apache-2.0. See
