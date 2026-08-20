@@ -136,6 +136,22 @@ release claim. The complete historical workloads, losses, distributions, hashes,
 provenance are in [`PERFORMANCE.md`](PERFORMANCE.md); publication requires a replacement run at the
 current head.
 
+The formal harness builds the release binary itself and binds its SHA-256 to the clean Git head
+before correctness or timing work can start:
+
+```console
+env CARGO_HOME=/Volumes/KIOXIA/Developments/cargo-home \
+  CARGO_TARGET_DIR=/Volumes/KIOXIA/Developments/cargo-target/rsomics-index \
+  TMPDIR=/Volumes/KIOXIA/Developments/tmp \
+  benchmarks/index-vs-htslib.sh build
+
+env CARGO_HOME=/Volumes/KIOXIA/Developments/cargo-home \
+  CARGO_TARGET_DIR=/Volumes/KIOXIA/Developments/cargo-target/rsomics-index \
+  TMPDIR=/Volumes/KIOXIA/Developments/tmp \
+  benchmarks/index-vs-htslib.sh run \
+  --result-dir /Volumes/KIOXIA/Developments/tmp/rsomics-index-benchmark-current
+```
+
 ## License
 
 `rsomics-index` is available under MIT OR Apache-2.0. See

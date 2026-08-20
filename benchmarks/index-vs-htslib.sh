@@ -4,6 +4,7 @@ export LC_ALL=C
 
 repository=$(cd "$(dirname "$0")/.." && pwd)
 binary=/Volumes/KIOXIA/Developments/cargo-target/rsomics-index/release/rsomics-index
+binary_overridden=false
 oracle_directory=/opt/homebrew/bin
 fixture_root="/Volumes/Zane's HDD/rsomics-fixtures/index-0.1.0"
 result_directory=/Volumes/KIOXIA/Developments/tmp/rsomics-index-benchmark
@@ -15,7 +16,7 @@ runs=10
 
 usage() {
     cat >&2 <<EOF
-usage: $0 generate|smoke|run|summarize [options]
+usage: $0 build|generate|smoke|run|summarize [options]
 
 options:
   --binary PATH
@@ -61,7 +62,7 @@ resolve_executable() {
 parse_options() {
     while (($#)); do
         case "$1" in
-            --binary) binary=${2:?}; shift 2 ;;
+            --binary) binary=${2:?}; binary_overridden=true; shift 2 ;;
             --oracle-dir) oracle_directory=${2:?}; shift 2 ;;
             --fixture-root) fixture_root=${2:?}; shift 2 ;;
             --result-dir) result_directory=${2:?}; shift 2 ;;
@@ -75,7 +76,98 @@ parse_options() {
     done
 }
 
+require_clean_head() {
+    [[ -z $(git -C "$repository" status --porcelain) ]] \
+        || die "the repository must be clean"
+}
+
+validate_execution_environment() {
+    local expected_cargo_home=/Volumes/KIOXIA/Developments/cargo-home
+    local expected_target=/Volumes/KIOXIA/Developments/cargo-target/rsomics-index
+    local expected_tmp=/Volumes/KIOXIA/Developments/tmp
+    local root_usage
+
+    [[ ${CARGO_HOME:-} == "$expected_cargo_home" ]] \
+        || die "CARGO_HOME must be $expected_cargo_home"
+    [[ ${CARGO_TARGET_DIR:-} == "$expected_target" ]] \
+        || die "CARGO_TARGET_DIR must be $expected_target"
+    [[ ${TMPDIR:-} == "$expected_tmp" ]] \
+        || die "TMPDIR must be $expected_tmp"
+    external_path "$CARGO_HOME"
+    external_path "$CARGO_TARGET_DIR"
+    external_path "$TMPDIR"
+    root_usage=$(df -P / | awk 'NR == 2 { gsub("%", "", $5); print $5 }')
+    [[ "$root_usage" =~ ^[0-9]+$ ]] || die "could not determine boot-disk usage"
+    ((root_usage < 80)) \
+        || die "boot disk is ${root_usage}% full; build, test, and benchmark work is prohibited"
+    df -h / /Volumes/KIOXIA >&2
+}
+
+build_binary() {
+    local expected_binary manifest stage head binary_sha lock_sha
+    validate_execution_environment
+    require_clean_head
+    [[ $binary_overridden == false ]] \
+        || die "build uses the repository's fixed external target; omit --binary"
+
+    expected_binary="$CARGO_TARGET_DIR/release/rsomics-index"
+    cargo build --manifest-path "$repository/Cargo.toml" --locked --release --bin rsomics-index
+    [[ -x "$expected_binary" ]] || die "build did not produce $expected_binary"
+
+    binary=$(realpath "$expected_binary")
+    manifest="$binary.build-provenance"
+    head=$(git -C "$repository" rev-parse HEAD)
+    binary_sha=$(shasum -a 256 "$binary" | awk '{ print $1 }')
+    lock_sha=$(shasum -a 256 "$repository/Cargo.lock" | awk '{ print $1 }')
+    stage=$(mktemp "$TMPDIR/rsomics-index-build-provenance.XXXXXX")
+    {
+        printf 'git_head=%s\n' "$head"
+        printf 'git_dirty=false\n'
+        printf 'binary_sha256=%s\n' "$binary_sha"
+        printf 'cargo_lock_sha256=%s\n' "$lock_sha"
+        printf 'binary=%s\n' "$binary"
+        printf 'built_utc=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        rustc --version --verbose
+        cargo --version --verbose
+    } > "$stage"
+    mv "$stage" "$manifest"
+    printf 'built and recorded exact head %s: %s\n' "$head" "$manifest"
+}
+
+manifest_value() {
+    local key=$1
+    awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' \
+        "$binary.build-provenance"
+}
+
+verify_binary_provenance() {
+    local manifest="$binary.build-provenance"
+    local current_head recorded_head current_sha recorded_sha current_lock recorded_lock
+    [[ -f "$manifest" ]] \
+        || die "missing $manifest; run '$0 build' from the clean benchmark head"
+    require_clean_head
+
+    current_head=$(git -C "$repository" rev-parse HEAD)
+    recorded_head=$(manifest_value git_head)
+    [[ "$recorded_head" == "$current_head" ]] \
+        || die "binary was built from $recorded_head, not current head $current_head"
+    [[ $(manifest_value git_dirty) == false ]] \
+        || die "binary provenance does not describe a clean build"
+    [[ $(manifest_value binary) == "$binary" ]] \
+        || die "binary path does not match its build provenance"
+
+    current_sha=$(shasum -a 256 "$binary" | awk '{ print $1 }')
+    recorded_sha=$(manifest_value binary_sha256)
+    [[ "$recorded_sha" == "$current_sha" ]] \
+        || die "binary checksum does not match its build provenance"
+    current_lock=$(shasum -a 256 "$repository/Cargo.lock" | awk '{ print $1 }')
+    recorded_lock=$(manifest_value cargo_lock_sha256)
+    [[ "$recorded_lock" == "$current_lock" ]] \
+        || die "Cargo.lock does not match the binary build"
+}
+
 prepare() {
+    validate_execution_environment
     positive_integer records "$records"
     positive_integer binary_bytes "$binary_bytes"
     positive_integer threads "$threads"
@@ -101,6 +193,10 @@ prepare() {
         || die "HTSlib bgzip 1.24 is required"
     [[ $("$tabix" --version | sed -n '1p') == "tabix (htslib) 1.24" ]] \
         || die "HTSlib tabix 1.24 is required"
+
+    if [[ $mode == smoke || $mode == run ]]; then
+        verify_binary_provenance
+    fi
 
     fixture_directory="$fixture_root/formal-${records}-${binary_bytes}"
     vcf="$fixture_directory/records.vcf"
@@ -287,6 +383,10 @@ validate_cross_index() {
 }
 
 smoke() {
+    if [[ $mode == smoke ]]; then
+        [[ -z $(find "$result_directory" -mindepth 1 -maxdepth 1 -print -quit) ]] \
+            || die "smoke result directory must be empty: $result_directory"
+    fi
     require_fixture
     scratch="$result_directory/scratch"
     mkdir -p "$scratch"
@@ -526,13 +626,14 @@ write_provenance() {
         "$tabix" --version | sed -n '1,2p'
         printf 'git_head=%s\n' "$(git -C "$repository" rev-parse HEAD)"
         printf 'git_dirty=false\n'
+        printf 'binary_build_manifest=%s\n' "$binary.build-provenance"
         printf 'records=%s\n' "$records"
         printf 'binary_bytes=%s\n' "$binary_bytes"
         printf 'threads=%s\n' "$threads"
         printf 'warmups=%s\n' "$warmups"
         printf 'runs=%s\n' "$runs"
         printf 'query_htslib_additional_threads=%s\n' "$((threads - 1))"
-        shasum -a 256 "$binary" "$bgzip" "$tabix" "$vcf" "$vcf_bgzf" \
+        shasum -a 256 "$binary" "$binary.build-provenance" "$bgzip" "$tabix" "$vcf" "$vcf_bgzf" \
             "$vcf_tbi" "$vcf_csi" "$binary_input" "$binary_bgzf" "$binary_gzi" \
             "$sparse_regions" "$dense_regions" "$overlap_regions" "$targets"
         wc -c "$vcf" "$vcf_bgzf" "$vcf_tbi" "$vcf_csi" \
@@ -547,8 +648,8 @@ run_benchmarks() {
     ((threads >= 2)) || die "--threads must be at least 2 for the four-worker lanes"
     ((warmups >= 3)) || die "--warmups must be at least 3"
     ((runs >= 10)) || die "--runs must be at least 10"
-    [[ -z $(git -C "$repository" status --porcelain) ]] \
-        || die "full benchmark runs require a clean worktree"
+    [[ -z $(find "$result_directory" -mindepth 1 -maxdepth 1 -print -quit) ]] \
+        || die "full benchmark result directory must be empty: $result_directory"
     smoke
 
     scratch="$result_directory/scratch"
@@ -598,7 +699,10 @@ run_benchmarks() {
 summarize() {
     local summary="$result_directory/summary.tsv"
     local paired="$result_directory/paired.tsv"
-    [[ -f "$summary" && -f "$paired" ]] || die "benchmark results are incomplete"
+    [[ -f "$summary" && -f "$paired" && -f "$result_directory/RESULTS.SHA256" ]] \
+        || die "benchmark results are incomplete"
+    shasum -a 256 --check "$result_directory/RESULTS.SHA256" >/dev/null \
+        || die "benchmark result checksum verification failed"
     printf '# rsomics-index performance summary\n\n'
     printf '| Workload | rsomics median s | HTSlib median s | Speedup | rsomics median RSS MiB | HTSlib median RSS MiB |\n'
     printf '|---|---:|---:|---:|---:|---:|\n'
@@ -628,6 +732,7 @@ shift
 parse_options "$@"
 
 case "$mode" in
+    build) build_binary ;;
     generate) prepare; generate ;;
     smoke) prepare; smoke ;;
     run) prepare; run_benchmarks ;;
