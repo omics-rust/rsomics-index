@@ -1,5 +1,4 @@
-use std::io::Write;
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 
 #[test]
 fn help_exposes_only_stable_operations() {
@@ -17,7 +16,10 @@ fn help_exposes_only_stable_operations() {
 
 #[test]
 fn json_requires_named_data_output() {
-    let output = run_with_stdin(["--json", "bgzip"], b"ACGT\n");
+    let output = Command::new(binary())
+        .args(["--json", "bgzip"])
+        .output()
+        .unwrap();
 
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
@@ -222,18 +224,6 @@ fn command_adapters_reject_aliases_and_incompatible_build_options() {
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_rsomics-index")
-}
-
-fn run_with_stdin<const N: usize>(arguments: [&str; N], input: &[u8]) -> Output {
-    let mut child = Command::new(binary())
-        .args(arguments)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child.stdin.take().unwrap().write_all(input).unwrap();
-    child.wait_with_output().unwrap()
 }
 
 fn assert_success(output: &Output) {
