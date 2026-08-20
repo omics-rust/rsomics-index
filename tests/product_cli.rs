@@ -120,6 +120,42 @@ fn binary_completes_the_bgzf_and_tabix_workflow() {
 }
 
 #[test]
+fn partial_tabix_configuration_starts_from_gff_defaults() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("records.gff");
+    let data = directory.path().join("records.gff.gz");
+    std::fs::write(&input, include_bytes!("golden/records.gff")).unwrap();
+
+    let compressed = Command::new(binary())
+        .arg("bgzip")
+        .arg(&input)
+        .arg("--output")
+        .arg(&data)
+        .output()
+        .unwrap();
+    assert_success(&compressed);
+
+    let built = Command::new(binary())
+        .args(["tabix", "build", "--sequence-column", "1"])
+        .arg(&data)
+        .output()
+        .unwrap();
+    assert_success(&built);
+
+    let queried = Command::new(binary())
+        .args(["tabix", "query"])
+        .arg(&data)
+        .arg("chr1:1-12")
+        .output()
+        .unwrap();
+    assert_success(&queried);
+    assert_eq!(
+        queried.stdout,
+        b"chr1\tsource\tgene\t1\t10\t.\t+\t.\tID=alpha\nchr1\tsource\texon\t11\t25\t.\t+\t.\tID=beta\n"
+    );
+}
+
+#[test]
 fn command_adapters_reject_aliases_and_incompatible_build_options() {
     let directory = tempfile::tempdir().unwrap();
     let input = directory.path().join("records.vcf");

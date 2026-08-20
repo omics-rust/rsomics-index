@@ -153,6 +153,36 @@ fn custom_columns_headers_and_query_modes_match() {
 
 #[test]
 #[ignore = "requires HTSlib 1.24 oracles"]
+fn partial_index_configuration_uses_htslib_gff_defaults() {
+    let oracle = Oracle::require();
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("partial.gff.gz");
+    compress(include_bytes!("golden/records.gff"), &data);
+    let default_index = sidecar(&data, "tbi");
+    let ours_index = directory.path().join("partial.ours.tbi");
+
+    let built = Command::new(ours())
+        .args(["tabix", "build", "--sequence-column", "1"])
+        .arg(&data)
+        .output()
+        .unwrap();
+    assert_success(&built);
+    std::fs::rename(&default_index, &ours_index).unwrap();
+
+    let built = Command::new(oracle.program("tabix"))
+        .args(["--force", "--sequence", "1"])
+        .arg(&data)
+        .output()
+        .unwrap();
+    assert_success(&built);
+    assert_eq!(
+        tabix::fs::read(&ours_index).unwrap(),
+        tabix::fs::read(&default_index).unwrap()
+    );
+}
+
+#[test]
+#[ignore = "requires HTSlib 1.24 oracles"]
 fn vcf_region_target_header_deduplication_and_list_modes_match() {
     let oracle = Oracle::require();
     let directory = tempfile::tempdir().unwrap();

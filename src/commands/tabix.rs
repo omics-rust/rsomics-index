@@ -264,16 +264,10 @@ fn build_config(arguments: &BuildArguments) -> Result<Config> {
         ));
     }
     if custom {
-        let sequence = arguments
-            .sequence_column
-            .ok_or_else(|| config("custom indexing requires --sequence-column"))?;
-        let begin = arguments
-            .begin_column
-            .ok_or_else(|| config("custom indexing requires --begin-column"))?;
         return Config::custom(
-            sequence,
-            begin,
-            arguments.end_column,
+            arguments.sequence_column.unwrap_or(1),
+            arguments.begin_column.unwrap_or(4),
+            Some(arguments.end_column.unwrap_or(5)),
             if arguments.zero_based {
                 CoordinateSystem::ZeroBasedHalfOpen
             } else {
