@@ -1,11 +1,13 @@
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 
-use noodles_bgzf::io::Reader;
+use libdeflater::Decompressor;
 
 use super::{
     GziIndex, StreamStats,
-    frame::{EOF_BLOCK, frame_uncompressed_size, invalid, parse_block_size},
+    frame::{
+        EOF_BLOCK, decode_frame, frame_uncompressed_size, invalid, parse_block_size, read_frame,
+    },
 };
 
 pub(super) fn decompress<R, W>(
@@ -24,27 +26,11 @@ where
         ));
     }
 
-    let tracked = TailReader::new(source);
-    let mut reader = Reader::new(tracked);
-    let bytes_out = io::copy(&mut reader, &mut sink).map_err(normalize_truncation)?;
-    sink.flush()?;
-    let tracked = reader.into_inner();
-    if !tracked.has_complete_eof() {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "BGZF stream is missing its complete EOF marker",
-        ));
-    }
-
-    Ok(StreamStats {
-        bytes_in: tracked.bytes_read,
-        bytes_out,
-        blocks: tracked.frames.data_blocks,
-    })
+    decode_stream(source, &mut sink, 0, None)
 }
 
 pub(super) fn decompress_indexed<R, W>(
-    source: R,
+    mut source: R,
     index: &GziIndex,
     offset: u64,
     size: Option<u64>,
@@ -54,28 +40,75 @@ where
     R: Read + Seek,
     W: Write,
 {
-    let require_eof = size.is_none();
-    let mut reader = Reader::new(TailReader::new(source));
-    reader.seek(index.query(offset)?)?;
-    let bytes_out = match size {
-        Some(size) => io::copy(&mut (&mut reader).take(size), &mut sink),
-        None => io::copy(&mut reader, &mut sink),
-    };
-    let bytes_out = bytes_out.map_err(normalize_truncation)?;
-    sink.flush()?;
+    let position = index.query(offset)?;
+    source.seek(SeekFrom::Start(position.compressed()))?;
+    decode_stream(
+        source,
+        &mut sink,
+        usize::from(position.uncompressed()),
+        size,
+    )
+}
 
-    let tracked = reader.into_inner();
-    if require_eof && !tracked.has_complete_eof() {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "BGZF stream is missing its complete EOF marker",
-        ));
+fn decode_stream<R, W>(
+    mut source: R,
+    mut sink: W,
+    mut skip: usize,
+    mut remaining: Option<u64>,
+) -> io::Result<StreamStats>
+where
+    R: Read,
+    W: Write,
+{
+    let mut decompressor = Decompressor::new();
+    let mut bytes_in = 0u64;
+    let mut bytes_out = 0u64;
+    let mut blocks = 0u64;
+
+    while remaining != Some(0) {
+        let frame = read_frame(&mut source).map_err(normalize_truncation)?;
+        bytes_in = bytes_in
+            .checked_add(frame.len() as u64)
+            .ok_or_else(|| io::Error::other("compressed byte count overflow"))?;
+        if frame == EOF_BLOCK {
+            let mut trailing = [0];
+            if source.read(&mut trailing)? != 0 {
+                return Err(invalid("bytes found after the BGZF EOF marker"));
+            }
+            sink.flush()?;
+            return Ok(StreamStats {
+                bytes_in,
+                bytes_out,
+                blocks,
+            });
+        }
+
+        let data = decode_frame(&mut decompressor, &frame)?;
+        if skip > data.len() {
+            return Err(invalid("indexed offset exceeds its BGZF block"));
+        }
+        let available = &data[skip..];
+        skip = 0;
+        let available_bytes = available.len() as u64;
+        let size = usize::try_from(remaining.unwrap_or(available_bytes).min(available_bytes))
+            .map_err(|_| io::Error::other("BGZF output size exceeds usize"))?;
+        sink.write_all(&available[..size])?;
+        bytes_out = bytes_out
+            .checked_add(size as u64)
+            .ok_or_else(|| io::Error::other("uncompressed byte count overflow"))?;
+        blocks = blocks
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("BGZF block count overflow"))?;
+        if let Some(limit) = &mut remaining {
+            *limit -= size as u64;
+        }
     }
 
+    sink.flush()?;
     Ok(StreamStats {
-        bytes_in: tracked.bytes_read,
+        bytes_in,
         bytes_out,
-        blocks: tracked.frames.data_blocks,
+        blocks,
     })
 }
 

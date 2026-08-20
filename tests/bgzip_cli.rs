@@ -189,6 +189,24 @@ fn gzi_partial_read_matches_the_requested_uncompressed_range() {
 }
 
 #[test]
+fn indexed_decompression_rejects_crc_corruption_in_the_selected_range() {
+    let input = (0..300_000).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+    let options = CompressOptions {
+        text: false,
+        ..CompressOptions::default()
+    };
+    let (mut encoded, _) = compress(input.as_slice(), Vec::new(), &options).unwrap();
+    let index = GziIndex::scan(&mut Cursor::new(&encoded)).unwrap();
+    let first_block_size = usize::from(u16::from_le_bytes([encoded[16], encoded[17]])) + 1;
+    encoded[first_block_size - 8] ^= 0xff;
+
+    let error =
+        decompress_indexed(Cursor::new(encoded), &index, 0, Some(1), Vec::new()).unwrap_err();
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+}
+
+#[test]
 fn indexed_decompression_without_size_requires_the_eof_marker() {
     let input = (0..300_000).map(|i| (i % 251) as u8).collect::<Vec<_>>();
     let options = CompressOptions {
