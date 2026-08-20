@@ -1,6 +1,6 @@
 # Performance
 
-## Version 0.1 release gate
+## Historical version 0.1 baseline
 
 The release benchmark compares `rsomics-index` with HTSlib 1.24 on thirteen
 BGZF and tabix paths. Every path uses three warmups followed by ten measured
@@ -11,10 +11,15 @@ The measured revision is
 `df8089c8db89b5a3e064bb01d60414a47780f4d1`. Its worktree was clean. The
 complete raw and semantic evidence is retained under
 `/Volumes/KIOXIA/Developments/tmp/rsomics-index-benchmark-20260820-df8089c`.
+Revisions `960b5a08093d8559f12bfcb7fcc1a15776b948cd` and
+`57286efb5ebaafac83d188493b5081d3dad0e475` subsequently changed BGZF
+decompression and tabix query algorithms. These results are therefore a
+historical optimization baseline, not the release gate for the current head.
+A complete current-head run must replace them before publication.
 
-### Decision
+### Historical decision
 
-The release gate passes on three strict throughput wins. TBI and CSI builds
+The measured revision passed on three strict throughput wins. TBI and CSI builds
 are 1.36 times faster than HTSlib, win all ten paired trials, and use about
 half the peak RSS. The target-scan query is 1.12 times faster and also wins all
 ten pairs, although it uses more memory.

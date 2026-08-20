@@ -129,12 +129,12 @@ reproduction, and metadata copying.
 
 ## Performance
 
-On the 6,000,000-record release fixture, TBI and CSI construction are 1.36 times faster than
-HTSlib 1.24 and use about half the peak memory. Target-scan querying is 1.12 times faster. These
-are scoped wins, not a claim that every operation is faster: compression is close but slightly
-slower, and indexed partial reads plus region queries currently trail HTSlib. The complete
-workloads, losses, distributions, hashes, and machine provenance are in
-[`PERFORMANCE.md`](PERFORMANCE.md).
+The retained 6,000,000-record benchmark is a pre-optimization baseline. It found strict TBI, CSI,
+and target-scan wins alongside slower indexed partial reads and region queries. BGZF decompression
+and tabix query algorithms have changed since that measurement, so the baseline is not a current
+release claim. The complete historical workloads, losses, distributions, hashes, and machine
+provenance are in [`PERFORMANCE.md`](PERFORMANCE.md); publication requires a replacement run at the
+current head.
 
 ## License
 
