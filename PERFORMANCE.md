@@ -1,5 +1,72 @@
 # Performance
 
+## Version 0.1 release gate
+
+The release benchmark ran from clean revision
+`821d491042a92d35153efcdf160acebf381ca4ee`. The harness built the release
+binary itself, then verified the Git head, binary SHA-256, `Cargo.lock`
+SHA-256, binary path, and clean worktree before correctness or timing work.
+The complete evidence is retained under
+`/Volumes/KIOXIA/Developments/tmp/rsomics-index-benchmark-20260820-821d491`.
+
+The gate passes for the implemented product slice. TBI and CSI construction,
+both binary-compression lanes, and all four query lanes have strict throughput
+advantages with lower median peak RSS. Every one of those eight workloads wins
+all ten paired trials. This is not a claim that every BGZF operation is faster:
+text compression is 1.5% to 2.5% slower, full binary decompression is 0.6%
+slower, text decompression is 13.8% slower, and the 512 MiB indexed partial read
+is 44.4% slower. All thirteen workloads use less median peak memory.
+
+| Workload | rsomics median wall | HTSlib median wall | Speedup | rsomics median RSS | HTSlib median RSS | Paired wins |
+|---|---:|---:|---:|---:|---:|---:|
+| TBI build, 6M records | 1.375 s | 4.045 s | 2.94x | 3.1 MiB | 6.0 MiB | 10/10 |
+| CSI build, 6M records | 1.355 s | 4.015 s | 2.96x | 3.1 MiB | 5.9 MiB | 10/10 |
+| text compression, 1 worker | 15.010 s | 14.785 s | 0.99x | 4.8 MiB | 6.4 MiB | 1/10 |
+| text compression, 4 workers | 15.075 s | 14.705 s | 0.98x | 7.8 MiB | 9.7 MiB | 0/10 |
+| binary compression, 1 worker | 23.605 s | 29.365 s | 1.24x | 3.8 MiB | 6.5 MiB | 10/10 |
+| binary compression, 4 workers | 15.255 s | 17.055 s | 1.12x | 6.3 MiB | 10.5 MiB | 10/10 |
+| text decompression, 1 worker | 0.370 s | 0.325 s | 0.88x | 3.7 MiB | 5.9 MiB | 0/10 |
+| binary decompression, 1 worker | 14.205 s | 14.125 s | 0.99x | 3.7 MiB | 5.9 MiB | 4/10 |
+| 512 MiB indexed partial read | 0.130 s | 0.090 s | 0.69x | 4.3 MiB | 6.5 MiB | 0/10 |
+| 10,000 sparse regions, 1 worker | 30.820 s | 52.205 s | 1.69x | 4.6 MiB | 17.0 MiB | 10/10 |
+| dense regions, 4-worker budget | 0.130 s | 0.435 s | 3.35x | 4.7 MiB | 7.4 MiB | 10/10 |
+| overlap plus unique, 4-worker budget | 1.025 s | 2.100 s | 2.05x | 4.8 MiB | 7.6 MiB | 10/10 |
+| target scan, 4-worker budget | 1.080 s | 4.065 s | 3.76x | 4.7 MiB | 7.4 MiB | 10/10 |
+
+### Method and equality
+
+The deterministic fixture contains 6,000,000 VCF records on 24 contigs and a
+2,147,483,648-byte AES-CTR incompressible stream. Before timing, both tools
+reproduced the complete plain-input hashes for compression and decompression,
+the same 512 MiB indexed slice, and identical semantic query output. TBI is
+byte-identical; CSI is verified through complete cross-tool reads in both
+directions. The correctness ledger contains 22 accepted output records.
+
+Each workload uses three warmup pairs followed by ten measured pairs in
+alternating order. macOS `/usr/bin/time -p -l` records wall, user, and system
+time plus peak resident memory. Query lanes give rsomics four total workers and
+HTSlib three additional workers, matching HTSlib's command contract. The run
+produced 260 timed commands, 104 metric summaries, and 130 paired records.
+
+The machine was an Apple M2 Mac14,3 with 8 GiB physical memory, macOS 26.6.1
+build 25G76, and rustc 1.97.1. The compatibility binaries were HTSlib 1.24
+`bgzip` and `tabix`. Fixtures were read from Zane's HDD; the release binary,
+scratch outputs, and result ledger were on KIOXIA.
+
+### Release evidence fingerprints
+
+| Artifact | SHA-256 |
+|---|---|
+| rsomics binary | `184860bd075777ac309efd72cca46b7c9dad4eb2d7c2e5db3c7e214fc17ec69d` |
+| exact-build provenance | `74d9cdc57bb7f5cee780058f85858f0cddeda75e4bb3b12691bf3b065115f6b0` |
+| benchmark harness | `95d366d24f0c677defba94c5c32481b9b8af96c23201d25051661fdd94232184` |
+| result manifest | `d7156d942e160980d17865526a1a6b7b1818b3dde6cfef6c3fe535218eaff2d0` |
+| raw distribution | `c3b256de700fc15675c63bb754f4918c85dd2642426576d7e12a59434854712d` |
+| metric summary | `92270b2622e3368371b2b0346f1259f5c8d39adef3b6262d88faad6aa4287fd5` |
+| paired ledger | `48e55c4936006ab43aadd7e713c90e1de0b30fa8107181a67ea63d110119b8ba` |
+| equality ledger | `93051968a990646bb9dcc1e93cf67692a3cc3e218104bb1d00c1c3ed37830323` |
+| provenance | `534e19cb0a50856af60c84ade91070f3c3788f2d50251984d92aeef1ca38a22e` |
+
 ## Historical version 0.1 baseline
 
 The release benchmark compares `rsomics-index` with HTSlib 1.24 on thirteen

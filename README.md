@@ -129,12 +129,11 @@ reproduction, and metadata copying.
 
 ## Performance
 
-The retained 6,000,000-record benchmark is a pre-optimization baseline. It found strict TBI, CSI,
-and target-scan wins alongside slower indexed partial reads and region queries. BGZF decompression
-and tabix query algorithms have changed since that measurement, so the baseline is not a current
-release claim. The complete historical workloads, losses, distributions, hashes, and machine
-provenance are in [`PERFORMANCE.md`](PERFORMANCE.md); publication requires a replacement run at the
-current head.
+The exact-head 6,000,000-record release benchmark records strict wins for TBI and CSI construction,
+binary compression, and all four query workloads, with lower median peak RSS in every measured
+path. Text compression, full decompression, and indexed partial reads remain slower and are not
+presented as wins. Complete distributions, losses, hashes, and machine provenance are in
+[`PERFORMANCE.md`](PERFORMANCE.md).
 
 The formal harness builds the release binary itself and binds its SHA-256 to the clean Git head
 before correctness or timing work can start:
