@@ -1,7 +1,7 @@
 mod blocks;
 mod selection;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, Write};
 use std::num::NonZero;
@@ -14,7 +14,7 @@ use serde::Serialize;
 use crate::bgzip::reader::{TailReader, normalize_truncation};
 
 use self::blocks::BlockReader;
-use self::selection::{Selection, TargetSet, read_selections};
+use self::selection::{Selection, TargetSet, interval, read_selections};
 use super::{Config, LoadedIndex, load_index};
 
 #[derive(Debug, Clone)]
@@ -111,14 +111,17 @@ where
         return Err(invalid("query requires a region or targets file"));
     }
 
+    let cache_bytes = if selections.is_empty()
+        || selections_are_forward(&selections, &reference_ids, options.unique)
+    {
+        0
+    } else {
+        options.cache_bytes
+    };
     let mut reader = if options.header_only {
         None
     } else {
-        Some(BlockReader::open(
-            input,
-            options.workers,
-            options.cache_bytes,
-        )?)
+        Some(BlockReader::open(input, options.workers, cache_bytes)?)
     };
     let header_lines = if options.print_header || options.header_only {
         write_header(input, output, &config)?
@@ -199,7 +202,7 @@ struct IndexedQuery<'a, W: Write + ?Sized> {
 impl<W: Write + ?Sized> IndexedQuery<'_, W> {
     fn run(&mut self, reader: &mut BlockReader, selections: &[Selection]) -> Result<u64> {
         let mut records = 0u64;
-        let mut seen = HashSet::new();
+        let mut visited = TargetSet::empty();
         for selection in selections {
             if self.options.separate_regions {
                 self.output.write_all(&[self.config.comment()])?;
@@ -207,39 +210,68 @@ impl<W: Write + ?Sized> IndexedQuery<'_, W> {
                 self.output.write_all(b"\n")?;
             }
             let reference_id = self.reference_ids[selection.reference.as_slice()];
-            let chunks = self
-                .index
-                .query_interval(reference_id, selection.interval()?)?;
-            reader.read_chunks(&chunks, |offset, line| {
-                let line = trim_line(line);
-                if self.config.is_comment(line) {
-                    return Ok(());
+            if self.options.unique {
+                for (start, end) in visited.uncovered(selection) {
+                    self.read_interval(
+                        reader,
+                        selection,
+                        reference_id,
+                        interval(start, end)?,
+                        &visited,
+                        &mut records,
+                    )?;
                 }
-                let record = self.config.parse_unlocated(line).rs_with_context(|| {
-                    format!(
-                        "parsing record at BGZF virtual offset {}",
-                        u64::from(offset)
-                    )
-                })?;
-                if !selection.overlaps(&record)
-                    || self
-                        .targets
-                        .is_some_and(|targets| !targets.overlaps(&record))
-                {
-                    return Ok(());
-                }
-                if self.options.unique && !seen.insert(u64::from(offset)) {
-                    return Ok(());
-                }
-                self.output.write_all(line)?;
-                self.output.write_all(b"\n")?;
-                records = records
-                    .checked_add(1)
-                    .ok_or_else(|| invalid("query record count overflows u64"))?;
-                Ok(())
-            })?;
+                visited.insert(selection);
+            } else {
+                self.read_interval(
+                    reader,
+                    selection,
+                    reference_id,
+                    selection.interval()?,
+                    &visited,
+                    &mut records,
+                )?;
+            }
         }
         Ok(records)
+    }
+
+    fn read_interval(
+        &mut self,
+        reader: &mut BlockReader,
+        selection: &Selection,
+        reference_id: usize,
+        interval: noodles::core::region::Interval,
+        visited: &TargetSet,
+        records: &mut u64,
+    ) -> Result<()> {
+        let chunks = self.index.query_interval(reference_id, interval)?;
+        reader.read_chunks(&chunks, |offset, line| {
+            let line = trim_line(line);
+            if self.config.is_comment(line) {
+                return Ok(());
+            }
+            let record = self.config.parse_unlocated(line).rs_with_context(|| {
+                format!(
+                    "parsing record at BGZF virtual offset {}",
+                    u64::from(offset)
+                )
+            })?;
+            if !selection.overlaps(&record)
+                || self
+                    .targets
+                    .is_some_and(|targets| !targets.overlaps(&record))
+                || self.options.unique && visited.overlaps(&record)
+            {
+                return Ok(());
+            }
+            self.output.write_all(line)?;
+            self.output.write_all(b"\n")?;
+            *records = records
+                .checked_add(1)
+                .ok_or_else(|| invalid("query record count overflows u64"))?;
+            Ok(())
+        })
     }
 }
 
@@ -340,6 +372,26 @@ fn reference_ids(index: &LoadedIndex) -> HashMap<Vec<u8>, usize> {
         .enumerate()
         .map(|(id, name)| (name.to_vec(), id))
         .collect()
+}
+
+fn selections_are_forward(
+    selections: &[Selection],
+    reference_ids: &HashMap<Vec<u8>, usize>,
+    unique: bool,
+) -> bool {
+    selections.windows(2).all(|pair| {
+        let previous = &pair[0];
+        let current = &pair[1];
+        let previous_id = reference_ids[previous.reference.as_slice()];
+        let current_id = reference_ids[current.reference.as_slice()];
+        current_id > previous_id
+            || current_id == previous_id
+                && if unique {
+                    current.start >= previous.start
+                } else {
+                    previous.end.is_some_and(|end| current.start > end)
+                }
+    })
 }
 
 fn trim_line(mut line: &[u8]) -> &[u8] {

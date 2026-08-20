@@ -405,6 +405,7 @@ dependencies = [
  "crc32fast",
  "crossbeam-channel",
  "libdeflater",
+ "memchr",
  "noodles",
  "noodles-bgzf",
  "rsomics-common",

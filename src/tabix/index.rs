@@ -75,12 +75,28 @@ impl LoadedIndex {
         reference_id: usize,
         interval: Interval,
     ) -> Result<Vec<Chunk>> {
-        match &self.inner {
+        let mut chunks = match &self.inner {
             Inner::Tbi(index) => index.query(reference_id, interval),
             Inner::Csi(index) => index.query(reference_id, interval),
         }
-        .map_err(RsomicsError::Io)
+        .map_err(RsomicsError::Io)?;
+        merge_chunks(&mut chunks);
+        Ok(chunks)
     }
+}
+
+fn merge_chunks(chunks: &mut Vec<Chunk>) {
+    chunks.sort_unstable_by_key(|chunk| (chunk.start(), chunk.end()));
+    let mut merged: Vec<Chunk> = Vec::with_capacity(chunks.len());
+    for &chunk in chunks.iter() {
+        match merged.last_mut() {
+            Some(previous) if chunk.start() <= previous.end() => {
+                *previous = Chunk::new(previous.start(), previous.end().max(chunk.end()));
+            }
+            _ => merged.push(chunk),
+        }
+    }
+    *chunks = merged;
 }
 
 fn read_tbi<R>(source: R) -> Result<tabix::Index>
@@ -223,5 +239,32 @@ fn normalize_index_truncation(error: io::Error) -> io::Error {
         )
     } else {
         error
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use noodles_bgzf::VirtualPosition;
+
+    #[test]
+    fn overlapping_index_chunks_are_merged_in_stream_order() {
+        let position = |value| VirtualPosition::new(0, value).unwrap();
+        let mut chunks = vec![
+            Chunk::new(position(10), position(20)),
+            Chunk::new(position(0), position(5)),
+            Chunk::new(position(4), position(12)),
+            Chunk::new(position(30), position(40)),
+        ];
+
+        merge_chunks(&mut chunks);
+
+        assert_eq!(
+            chunks,
+            vec![
+                Chunk::new(position(0), position(20)),
+                Chunk::new(position(30), position(40)),
+            ]
+        );
     }
 }

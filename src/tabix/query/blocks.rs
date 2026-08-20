@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::mem;
@@ -9,6 +9,7 @@ use std::thread::{self, JoinHandle};
 
 use crossbeam_channel::{Receiver, Sender};
 use libdeflater::Decompressor;
+use memchr::memchr;
 use noodles_bgzf::VirtualPosition;
 use rsomics_common::{Context, Result, RsomicsError};
 
@@ -26,7 +27,8 @@ struct Block {
 
 pub(super) struct BlockReader {
     file: File,
-    pool: DecoderPool,
+    inline: Option<Decompressor>,
+    pool: Option<DecoderPool>,
     cache: BlockCache,
     next_job: u64,
     ready: HashMap<u64, io::Result<Arc<[u8]>>>,
@@ -48,9 +50,15 @@ impl BlockReader {
         let mut file =
             File::open(path).rs_with_context(|| format!("opening BGZF data {}", path.display()))?;
         validate_tail(&mut file)?;
+        let (inline, pool) = if workers.get() == 1 {
+            (Some(Decompressor::new()), None)
+        } else {
+            (None, Some(DecoderPool::new(workers)?))
+        };
         Ok(Self {
             file,
-            pool: DecoderPool::new(workers)?,
+            inline,
+            pool,
             cache: BlockCache::new(cache_bytes),
             next_job: 0,
             ready: HashMap::new(),
@@ -64,7 +72,6 @@ impl BlockReader {
     where
         F: FnMut(VirtualPosition, &[u8]) -> Result<()>,
     {
-        let mut emitted = HashSet::new();
         for chunk in chunks {
             if chunk.end() < chunk.start() {
                 return Err(invalid("index chunk end is before its start"));
@@ -93,19 +100,12 @@ impl BlockReader {
                     slice_end,
                     &mut line,
                     &mut line_offset,
-                    &mut |offset, bytes| {
-                        if emitted.insert(u64::from(offset)) {
-                            visit(offset, bytes)?;
-                        }
-                        Ok(())
-                    },
+                    &mut visit,
                 )
             })?;
             if !line.is_empty() {
                 let offset = line_offset.ok_or_else(|| invalid("record offset is missing"))?;
-                if emitted.insert(u64::from(offset)) {
-                    visit(offset, &line)?;
-                }
+                visit(offset, &line)?;
             }
         }
         Ok(())
@@ -246,12 +246,32 @@ impl BlockReader {
             .checked_add(frame_len)
             .ok_or_else(|| invalid("BGZF compressed offset overflows u64"))?;
         let eof = frame == EOF_BLOCK;
+        if let Some(decompressor) = &mut self.inline {
+            let data = decode_frame(decompressor, &frame).rs_with_context(|| {
+                format!("decoding BGZF block at compressed offset {compressed}")
+            })?;
+            let block = Block {
+                compressed,
+                next,
+                data: Arc::from(data),
+                eof,
+            };
+            self.cache.insert(block.clone());
+            #[cfg(test)]
+            {
+                self.stats.decoded_blocks += 1;
+            }
+            return Ok((Scheduled::Ready(block), next, eof));
+        }
         let id = self.next_job;
         self.next_job = self
             .next_job
             .checked_add(1)
             .ok_or_else(|| invalid("BGZF decode job count overflows u64"))?;
-        self.pool.send(DecodeJob { id, frame })?;
+        self.pool
+            .as_ref()
+            .ok_or_else(|| invalid("BGZF decoder is missing"))?
+            .send(DecodeJob { id, frame })?;
         #[cfg(test)]
         {
             self.stats.decoded_blocks += 1;
@@ -283,7 +303,11 @@ impl BlockReader {
                             format!("decoding BGZF block at compressed offset {compressed}")
                         })?;
                     }
-                    let result = self.pool.receive()?;
+                    let result = self
+                        .pool
+                        .as_ref()
+                        .ok_or_else(|| invalid("BGZF decoder is missing"))?
+                        .receive()?;
                     if result.id == id {
                         break result.data.rs_with_context(|| {
                             format!("decoding BGZF block at compressed offset {compressed}")
@@ -468,30 +492,43 @@ where
 {
     let mut position = start;
     while position < end {
+        let remaining = &block.data[position..end];
+        let newline = memchr(b'\n', remaining);
         if line.is_empty() {
             let uncompressed =
                 u16::try_from(position).map_err(|_| invalid("BGZF line offset exceeds u16"))?;
-            *line_offset = VirtualPosition::new(block.compressed, uncompressed);
-        }
-        let remaining = &block.data[position..end];
-        match remaining.iter().position(|byte| *byte == b'\n') {
-            Some(relative_end) => {
-                let next = position + relative_end + 1;
-                line.extend_from_slice(&block.data[position..next]);
-                visit(
-                    line_offset
-                        .as_ref()
-                        .copied()
-                        .ok_or_else(|| invalid("record offset is missing"))?,
-                    line,
-                )?;
-                line.clear();
-                *line_offset = None;
-                position = next;
+            let offset = VirtualPosition::new(block.compressed, uncompressed)
+                .ok_or_else(|| invalid("BGZF line offset is invalid"))?;
+            match newline {
+                Some(relative_end) => {
+                    let next = position + relative_end + 1;
+                    visit(offset, &block.data[position..next])?;
+                    position = next;
+                }
+                None => {
+                    *line_offset = Some(offset);
+                    line.extend_from_slice(remaining);
+                    position = end;
+                }
             }
-            None => {
-                line.extend_from_slice(remaining);
-                position = end;
+        } else {
+            match newline {
+                Some(relative_end) => {
+                    let next = position + relative_end + 1;
+                    line.extend_from_slice(&block.data[position..next]);
+                    visit(
+                        line_offset
+                            .take()
+                            .ok_or_else(|| invalid("record offset is missing"))?,
+                        line,
+                    )?;
+                    line.clear();
+                    position = next;
+                }
+                None => {
+                    line.extend_from_slice(remaining);
+                    position = end;
+                }
             }
         }
     }
@@ -587,5 +624,32 @@ mod tests {
         assert_eq!(uncached.stats.decoded_blocks, first_pass * 2);
         assert_eq!(uncached.stats.cache_hits, 0);
         assert_eq!(uncached.cache.used, 0);
+    }
+
+    #[test]
+    fn one_worker_decodes_without_a_thread_pool() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("records.bed.gz");
+        let output = File::create(&path).unwrap();
+        let (output, _) = compress(
+            b"chr1\t0\t1\n".as_slice(),
+            output,
+            &CompressOptions::default(),
+        )
+        .unwrap();
+        drop(output);
+
+        let mut reader = BlockReader::open(&path, NonZero::<usize>::MIN, 0).unwrap();
+        let mut records = 0;
+        reader
+            .read_all(|_, _| {
+                records += 1;
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(records, 1);
+        assert!(reader.inline.is_some());
+        assert!(reader.pool.is_none());
     }
 }

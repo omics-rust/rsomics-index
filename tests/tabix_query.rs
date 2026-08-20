@@ -33,6 +33,17 @@ fn query_modes_preserve_their_contracts() {
     );
     assert_eq!(unique.matches("chr1\t20").count(), 1);
 
+    let reversed_unique = query_text(
+        &data,
+        QueryOptions {
+            regions: vec!["chr1:15-30".into(), "chr1:1-25".into()],
+            unique: true,
+            ..QueryOptions::default()
+        },
+    );
+    assert!(reversed_unique.find("chr1\t20").unwrap() < reversed_unique.find("chr1\t7").unwrap());
+    assert_eq!(reversed_unique.matches("chr1\t20").count(), 1);
+
     let separated = query_text(
         &data,
         QueryOptions {

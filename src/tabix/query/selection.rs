@@ -68,11 +68,7 @@ impl Selection {
     }
 
     pub fn interval(&self) -> Result<Interval> {
-        let start = position(self.start)?;
-        match self.end {
-            Some(end) => Ok((start..=position(end)?).into()),
-            None => Ok((start..).into()),
-        }
+        interval(self.start, self.end)
     }
 
     pub fn overlaps(&self, record: &Record<'_>) -> bool {
@@ -115,6 +111,13 @@ pub(super) struct TargetSet {
 }
 
 impl TargetSet {
+    pub fn empty() -> Self {
+        Self {
+            intervals: HashMap::new(),
+            reference_order: Vec::new(),
+        }
+    }
+
     pub fn new(selections: Vec<Selection>) -> Self {
         let mut intervals = HashMap::<Vec<u8>, Vec<(u64, u64)>>::new();
         let mut reference_order = Vec::new();
@@ -129,21 +132,57 @@ impl TargetSet {
         }
         for ranges in intervals.values_mut() {
             ranges.sort_unstable();
-            let mut merged: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
-            for &(start, end) in ranges.iter() {
-                match merged.last_mut() {
-                    Some((_, current_end)) if start <= current_end.saturating_add(1) => {
-                        *current_end = (*current_end).max(end);
-                    }
-                    _ => merged.push((start, end)),
-                }
-            }
-            *ranges = merged;
+            merge_ranges(ranges);
         }
         Self {
             intervals,
             reference_order,
         }
+    }
+
+    pub fn insert(&mut self, selection: &Selection) {
+        if !self.intervals.contains_key(&selection.reference) {
+            self.reference_order.push(selection.reference.clone());
+        }
+        let ranges = self
+            .intervals
+            .entry(selection.reference.clone())
+            .or_default();
+        ranges.push((selection.start, selection.end.unwrap_or(u64::MAX)));
+        ranges.sort_unstable();
+        merge_ranges(ranges);
+    }
+
+    pub fn uncovered(&self, selection: &Selection) -> Vec<(u64, Option<u64>)> {
+        let mut uncovered = Vec::new();
+        let mut cursor = selection.start;
+        let end = selection.end.unwrap_or(u64::MAX);
+        let Some(ranges) = self.intervals.get(&selection.reference) else {
+            uncovered.push((selection.start, selection.end));
+            return uncovered;
+        };
+
+        for &(covered_start, covered_end) in ranges {
+            if covered_end < cursor {
+                continue;
+            }
+            if covered_start > end {
+                break;
+            }
+            if covered_start > cursor {
+                uncovered.push((cursor, Some(end.min(covered_start - 1))));
+            }
+            if covered_end == u64::MAX {
+                return uncovered;
+            }
+            cursor = cursor.max(covered_end + 1);
+            if cursor > end {
+                return uncovered;
+            }
+        }
+
+        uncovered.push((cursor, selection.end));
+        uncovered
     }
 
     pub fn overlaps(&self, record: &Record<'_>) -> bool {
@@ -158,6 +197,19 @@ impl TargetSet {
     pub fn references(&self) -> impl Iterator<Item = &[u8]> {
         self.reference_order.iter().map(Vec::as_slice)
     }
+}
+
+fn merge_ranges(ranges: &mut Vec<(u64, u64)>) {
+    let mut merged: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
+    for &(start, end) in ranges.iter() {
+        match merged.last_mut() {
+            Some((_, current_end)) if start <= current_end.saturating_add(1) => {
+                *current_end = (*current_end).max(end);
+            }
+            _ => merged.push((start, end)),
+        }
+    }
+    *ranges = merged;
 }
 
 fn parse_tabular(line: &[u8], bed: bool) -> Result<Selection> {
@@ -216,6 +268,14 @@ fn trim_line(mut line: &[u8]) -> &[u8] {
 fn position(value: u64) -> Result<Position> {
     let value = usize::try_from(value).map_err(|_| invalid("region coordinate exceeds usize"))?;
     Position::try_from(value).map_err(|error| invalid(error.to_string()))
+}
+
+pub(super) fn interval(start: u64, end: Option<u64>) -> Result<Interval> {
+    let start = position(start)?;
+    match end {
+        Some(end) => Ok((start..=position(end)?).into()),
+        None => Ok((start..).into()),
+    }
 }
 
 fn parse_region_coordinate(value: &str) -> Result<u64> {

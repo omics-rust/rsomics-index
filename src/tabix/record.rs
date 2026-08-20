@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use memchr::{memchr, memmem};
 use rsomics_common::{Context, Result, RsomicsError};
 
 use super::{Config, CoordinateSystem, Preset, trim_line_end};
@@ -178,7 +179,7 @@ fn cigar_reference_span(cigar: &[u8]) -> Result<u64> {
 }
 
 fn vcf_info_end(info: &[u8], start: u64) -> Result<Option<u64>> {
-    if info == b"." {
+    if info == b"." || memmem::find(info, b"END=").is_none() {
         return Ok(None);
     }
     let mut end = None;
@@ -235,10 +236,19 @@ struct SelectedFields<'a> {
 
 fn select_fields<'a>(config: &Config, line: &'a [u8]) -> Result<SelectedFields<'a>> {
     let mut selected = SelectedFields::default();
-    let mut count = 0usize;
-    for (index, field) in line.split(|byte| *byte == b'\t').enumerate() {
-        let column = index + 1;
-        count = column;
+    let max_column = config.max_column();
+    let mut start = 0usize;
+    for column in 1..=max_column {
+        let end = match memchr(b'\t', &line[start..]) {
+            Some(offset) => start + offset,
+            None if column == max_column => line.len(),
+            None => {
+                return Err(invalid(format!(
+                    "record has {column} columns but {max_column} are required"
+                )));
+            }
+        };
+        let field = &line[start..end];
         if column == config.sequence.get() {
             selected.reference = Some(field);
         }
@@ -254,15 +264,10 @@ fn select_fields<'a>(config: &Config, line: &'a [u8]) -> Result<SelectedFields<'
             (Some(Preset::Vcf), 8) => selected.info = Some(field),
             _ => {}
         }
-        if column == config.max_column() {
+        if column == max_column {
             break;
         }
-    }
-    if count < config.max_column() {
-        return Err(invalid(format!(
-            "record has {count} columns but {} are required",
-            config.max_column()
-        )));
+        start = end + 1;
     }
     Ok(selected)
 }
