@@ -85,7 +85,7 @@ validate_execution_environment() {
     local expected_cargo_home=/Volumes/KIOXIA/Developments/cargo-home
     local expected_target=/Volumes/KIOXIA/Developments/cargo-target/rsomics-index
     local expected_tmp=/Volumes/KIOXIA/Developments/tmp
-    local root_usage
+    local root_info root_size root_free root_usage
 
     [[ ${CARGO_HOME:-} == "$expected_cargo_home" ]] \
         || die "CARGO_HOME must be $expected_cargo_home"
@@ -93,12 +93,17 @@ validate_execution_environment() {
         || die "CARGO_TARGET_DIR must be $expected_target"
     [[ ${TMPDIR:-} == "$expected_tmp" ]] \
         || die "TMPDIR must be $expected_tmp"
-    external_path "$CARGO_HOME"
-    external_path "$CARGO_TARGET_DIR"
-    external_path "$TMPDIR"
-    root_usage=$(df -P / | awk 'NR == 2 { gsub("%", "", $5); print $5 }')
-    [[ "$root_usage" =~ ^[0-9]+$ ]] || die "could not determine boot-disk usage"
-    ((root_usage < 80)) \
+    external_path "$(realpath "$CARGO_HOME")"
+    external_path "$(realpath "$CARGO_TARGET_DIR")"
+    external_path "$(realpath "$TMPDIR")"
+    root_info=$(diskutil info -plist /)
+    root_size=$(printf '%s' "$root_info" | plutil -extract APFSContainerSize raw -o - -)
+    root_free=$(printf '%s' "$root_info" | plutil -extract APFSContainerFree raw -o - -)
+    [[ "$root_size" =~ ^[1-9][0-9]*$ && "$root_free" =~ ^[0-9]+$ ]] \
+        || die "could not determine boot APFS container capacity"
+    ((root_free <= root_size)) || die "invalid boot APFS container capacity"
+    root_usage=$(((100 * (root_size - root_free) + root_size - 1) / root_size))
+    ((100 * (root_size - root_free) < 80 * root_size)) \
         || die "boot disk is ${root_usage}% full; build, test, and benchmark work is prohibited"
     df -h / /Volumes/KIOXIA >&2
 }
