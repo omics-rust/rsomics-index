@@ -1,5 +1,20 @@
 # Performance
 
+## Current evidence availability
+
+Publication is on hold as of 2026-09-08. The original result directory cited
+below is no longer present at its recorded path, so its raw trials and manifest
+cannot currently be reverified. The tables remain a historical report, not a
+freshly reproduced release gate. Restore and hash-verify the original evidence
+or repeat the complete measurement before publication.
+
+The harness previously checked `df /`, which reports the macOS system volume
+rather than physical APFS container occupancy. It now checks container size
+and free bytes directly and rejects occupancy at or above 80%. On 2026-09-08,
+`df /` reported 47% while the boot container was about 94% occupied. Local
+builds and benchmarks remain stopped. All project build and scratch paths
+continue to be external.
+
 ## Version 0.1 release gate
 
 The release benchmark ran from clean revision
