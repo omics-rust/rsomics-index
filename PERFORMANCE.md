@@ -8,12 +8,20 @@ cannot currently be reverified. The tables remain a historical report, not a
 freshly reproduced release gate. Restore and hash-verify the original evidence
 or repeat the complete measurement before publication.
 
-The harness previously checked `df /`, which reports the macOS system volume
-rather than physical APFS container occupancy. It now checks container size
-and free bytes directly and rejects occupancy at or above 80%. On 2026-09-08,
-`df /` reported 47% while the boot container was about 94% occupied. Local
-builds and benchmarks remain stopped. All project build and scratch paths
-continue to be external.
+The November 1 storage contract supersedes the old boot-occupancy stop.
+`scripts/guarded-cargo.sh` verifies physically mounted external devices,
+Cargo's resolved target, Rustup, temporary/cache paths and external headroom.
+The benchmark additionally checks reference, oracle, binary and result paths
+before creating outputs. Unrelated boot-disk occupancy does not block this
+work; project data, builds and scratch must still remain external. This
+storage repair does not restore the missing benchmark evidence or qualify a
+new performance result. Do not run scientific upstream oracles on the Mac;
+the new reference-workflow source casebook runs on Linux.
+
+For local native-only work, use `bash scripts/guarded-cargo.sh test --locked`
+or its `--exec COMMAND…` mode. The latter supplies a checked environment, not
+a sandbox; the invoked command's output paths still need inspection. The old
+benchmark's clean-head, binary, lockfile and trial bindings remain mandatory.
 
 ## Version 0.1 release gate
 

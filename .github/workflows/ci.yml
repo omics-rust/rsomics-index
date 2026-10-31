@@ -44,7 +44,7 @@ jobs:
 
       - name: Benchmark harness syntax
         if: matrix.target == 'linux-x86_64'
-        run: bash -n benchmarks/*.sh
+        run: bash -n scripts/*.sh benchmarks/*.sh
 
       - name: Test debug
         run: cargo test --locked --all-targets --all-features

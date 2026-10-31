@@ -5,7 +5,7 @@ export LC_ALL=C
 repository=$(cd "$(dirname "$0")/.." && pwd)
 binary=/Volumes/KIOXIA/Developments/cargo-target/rsomics-index/release/rsomics-index
 binary_overridden=false
-oracle_directory=/opt/homebrew/bin
+oracle_directory=/Volumes/KIOXIA/Developments/oracles/htslib-1.24/bin
 fixture_root="/Volumes/Zane's HDD/rsomics-fixtures/index-0.1.0"
 result_directory=/Volumes/KIOXIA/Developments/tmp/rsomics-index-benchmark
 records=6000000
@@ -38,10 +38,7 @@ die() {
 }
 
 external_path() {
-    case "$1" in
-        /Volumes/*) ;;
-        *) die "benchmark data, binaries, and results must remain on external volumes: $1" ;;
-    esac
+    bash "$repository/scripts/guarded-cargo.sh" --check-paths "$1"
 }
 
 positive_integer() {
@@ -85,7 +82,7 @@ validate_execution_environment() {
     local expected_cargo_home=/Volumes/KIOXIA/Developments/cargo-home
     local expected_target=/Volumes/KIOXIA/Developments/cargo-target/rsomics-index
     local expected_tmp=/Volumes/KIOXIA/Developments/tmp
-    local root_info root_size root_free root_usage
+    local expected_rustup=/Volumes/KIOXIA/Developments/rustup-home
 
     [[ ${CARGO_HOME:-} == "$expected_cargo_home" ]] \
         || die "CARGO_HOME must be $expected_cargo_home"
@@ -93,19 +90,10 @@ validate_execution_environment() {
         || die "CARGO_TARGET_DIR must be $expected_target"
     [[ ${TMPDIR:-} == "$expected_tmp" ]] \
         || die "TMPDIR must be $expected_tmp"
-    external_path "$(realpath "$CARGO_HOME")"
-    external_path "$(realpath "$CARGO_TARGET_DIR")"
-    external_path "$(realpath "$TMPDIR")"
-    root_info=$(diskutil info -plist /)
-    root_size=$(printf '%s' "$root_info" | plutil -extract APFSContainerSize raw -o - -)
-    root_free=$(printf '%s' "$root_info" | plutil -extract APFSContainerFree raw -o - -)
-    [[ "$root_size" =~ ^[1-9][0-9]*$ && "$root_free" =~ ^[0-9]+$ ]] \
-        || die "could not determine boot APFS container capacity"
-    ((root_free <= root_size)) || die "invalid boot APFS container capacity"
-    root_usage=$(((100 * (root_size - root_free) + root_size - 1) / root_size))
-    ((100 * (root_size - root_free) < 80 * root_size)) \
-        || die "boot disk is ${root_usage}% full; build, test, and benchmark work is prohibited"
-    df -h / /Volumes/KIOXIA >&2
+    [[ ${RUSTUP_HOME:-} == "$expected_rustup" ]] \
+        || die "RUSTUP_HOME must be $expected_rustup"
+    bash "$repository/scripts/guarded-cargo.sh" --check-paths \
+        "$binary" "$oracle_directory" "$fixture_root" "$result_directory"
 }
 
 build_binary() {
@@ -116,7 +104,8 @@ build_binary() {
         || die "build uses the repository's fixed external target; omit --binary"
 
     expected_binary="$CARGO_TARGET_DIR/release/rsomics-index"
-    cargo build --manifest-path "$repository/Cargo.toml" --locked --release --bin rsomics-index
+    bash "$repository/scripts/guarded-cargo.sh" build \
+        --manifest-path "$repository/Cargo.toml" --locked --release --bin rsomics-index
     [[ -x "$expected_binary" ]] || die "build did not produce $expected_binary"
 
     binary=$(realpath "$expected_binary")
@@ -132,8 +121,8 @@ build_binary() {
         printf 'cargo_lock_sha256=%s\n' "$lock_sha"
         printf 'binary=%s\n' "$binary"
         printf 'built_utc=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-        rustc --version --verbose
-        cargo --version --verbose
+        "$RUSTUP_HOME/toolchains/1.91.0-aarch64-apple-darwin/bin/rustc" --version --verbose
+        "$RUSTUP_HOME/toolchains/1.91.0-aarch64-apple-darwin/bin/cargo" --version --verbose
     } > "$stage"
     mv "$stage" "$manifest"
     printf 'built and recorded exact head %s: %s\n' "$head" "$manifest"
@@ -742,6 +731,7 @@ case "$mode" in
     smoke) prepare; smoke ;;
     run) prepare; run_benchmarks ;;
     summarize)
+        external_path "$result_directory"
         mkdir -p "$result_directory"
         result_directory=$(realpath "$result_directory")
         external_path "$result_directory"
