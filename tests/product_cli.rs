@@ -6,10 +6,10 @@ fn help_exposes_only_stable_operations() {
 
     assert!(output.status.success());
     let help = String::from_utf8(output.stdout).unwrap();
-    for present in ["bgzip", "tabix"] {
+    for present in ["bgzip", "tabix", "faidx", "dict"] {
         assert!(help.contains(present), "{help}");
     }
-    for absent in ["fasta-index", "dict", "fm-search"] {
+    for absent in ["fasta-index", "fm-search"] {
         assert!(!help.contains(absent), "{help}");
     }
 }

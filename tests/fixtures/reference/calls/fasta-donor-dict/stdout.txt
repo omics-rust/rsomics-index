@@ -1,0 +1,3 @@
+@HD	VN:1.0	SO:unsorted
+@SQ	SN:chr1	LN:12	M5:31e91beccf6059ff57c696827c0c6a4b	UR:file:///ref.fa
+@SQ	SN:chr2	LN:8	M5:57e290959274e7fc2f2b3a46ed35b50b	UR:file:///ref.fa

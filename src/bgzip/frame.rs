@@ -92,13 +92,20 @@ pub(crate) fn decode_frame(decompressor: &mut Decompressor, frame: &[u8]) -> io:
             Err(invalid("noncanonical empty BGZF block"))
         };
     }
-    let mut data = vec![0; size];
+    decode_member(decompressor, frame)
+}
+
+pub(crate) fn decode_member(decompressor: &mut Decompressor, frame: &[u8]) -> io::Result<Vec<u8>> {
+    let size = usize::try_from(frame_uncompressed_size(frame)?)
+        .map_err(|_| invalid("BGZF block size exceeds usize"))?;
+    let mut data = vec![0; size.max(1)];
     let written = decompressor
         .gzip_decompress(frame, &mut data)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     if written != size {
         return Err(invalid("BGZF trailer size does not match decoded data"));
     }
+    data.truncate(written);
     Ok(data)
 }
 

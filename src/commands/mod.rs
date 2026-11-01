@@ -1,4 +1,6 @@
 pub(crate) mod bgzip;
+pub(crate) mod dict;
+pub(crate) mod faidx;
 pub(crate) mod tabix;
 
 use std::path::Path;

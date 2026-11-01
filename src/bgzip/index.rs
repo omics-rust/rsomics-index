@@ -58,10 +58,22 @@ impl GziIndex {
     }
 
     /// Reads and validates a complete GZI stream.
-    pub fn read<R>(mut source: R) -> io::Result<Self>
+    pub fn read<R>(source: R) -> io::Result<Self>
     where
         R: Read,
     {
+        Self::read_offsets(source, true)
+    }
+
+    pub(crate) fn read_reference<R: Read>(source: R) -> io::Result<Self> {
+        Self::read_offsets(source, false)
+    }
+
+    pub(crate) fn from_scanned_entries(entries: Vec<(u64, u64)>) -> Self {
+        Self { entries }
+    }
+
+    fn read_offsets<R: Read>(mut source: R, adjacent: bool) -> io::Result<Self> {
         let count = read_u64(&mut source)?;
         let count = usize::try_from(count).map_err(|_| invalid("GZI entry count is too large"))?;
         let mut entries = Vec::new();
@@ -83,7 +95,7 @@ impl GziIndex {
             if entry.0 <= previous.0 || entry.1 <= previous.1 {
                 return Err(invalid("GZI offsets must be strictly increasing"));
             }
-            if entry.0 - previous.0 > 65_536 || entry.1 - previous.1 > 65_536 {
+            if (adjacent && entry.0 - previous.0 > 65_536) || entry.1 - previous.1 > 65_536 {
                 return Err(invalid("GZI entries do not describe adjacent BGZF blocks"));
             }
             entries.push(entry);

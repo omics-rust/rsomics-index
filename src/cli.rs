@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use rsomics_common::{OutputArgs, Result, ToolMeta, run as run_tool};
 use serde::Serialize;
 
-use crate::commands::{bgzip, tabix};
+use crate::commands::{bgzip, dict, faidx, tabix};
 
 const META: ToolMeta = ToolMeta {
     name: "rsomics-index",
@@ -33,6 +33,10 @@ enum Command {
     Bgzip(bgzip::Arguments),
     /// Build and query local TBI and CSI indexes
     Tabix(tabix::Arguments),
+    /// Build FASTA indexes and retrieve ordered reference regions
+    Faidx(faidx::Arguments),
+    /// Create a SAM sequence dictionary from FASTA
+    Dict(dict::Arguments),
 }
 
 #[derive(Debug, Serialize)]
@@ -40,6 +44,8 @@ enum Command {
 enum CommandReport {
     Bgzip(crate::bgzip::Summary),
     Tabix(tabix::Report),
+    Faidx(faidx::Report),
+    Dict(crate::dict::Summary),
 }
 
 #[must_use]
@@ -56,6 +62,12 @@ fn execute(cli: Cli) -> Result<CommandReport> {
         }
         Command::Tabix(arguments) => {
             tabix::execute(arguments, cli.output.json).map(CommandReport::Tabix)
+        }
+        Command::Faidx(arguments) => {
+            faidx::execute(arguments, cli.output.json).map(CommandReport::Faidx)
+        }
+        Command::Dict(arguments) => {
+            dict::execute(arguments, cli.output.json).map(CommandReport::Dict)
         }
     }
 }

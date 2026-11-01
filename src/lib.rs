@@ -1,10 +1,13 @@
 #![deny(missing_docs)]
 
-//! Checked BGZF and tabix workflows used by the `rsomics-index` product.
+//! Checked local BGZF, tabix, and reference-resource workflows.
 
 mod cli;
 mod commands;
+mod dict;
+mod faidx;
 mod output;
+mod reference;
 
 /// BGZF compression, decompression, and GZI workflows.
 pub mod bgzip;

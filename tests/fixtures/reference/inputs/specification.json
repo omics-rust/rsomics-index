@@ -1,0 +1,87 @@
+{
+  "donors": {
+    "dict-donor": {
+      "commit": "e3dd9a007965f9dd741882690d973b9e51044bf3",
+      "owner": "rsomics-bam-dict",
+      "path": "tests/golden/small.fa",
+      "sha256": "35bba8db8b245b3443f7c00c6c2eaebf17da1fef60ba191720d5cf35ad934e3f"
+    },
+    "fasta-donor": {
+      "commit": "fb86ed124f069141b2934641f1291a8adc83a4be",
+      "owner": "rsomics-fasta-index",
+      "path": "tests/golden/two.fa",
+      "sha256": "f6aa242815f8cd80990041fcd2fff32cda7a5a76fb1da5e50622f54336a41331"
+    }
+  },
+  "files": {
+    "dict-donor": {
+      "bytes": 93,
+      "path": "dict-donor.fa",
+      "sha256": "35bba8db8b245b3443f7c00c6c2eaebf17da1fef60ba191720d5cf35ad934e3f"
+    },
+    "fasta-donor": {
+      "bytes": 34,
+      "path": "fasta-donor.fa",
+      "sha256": "f6aa242815f8cd80990041fcd2fff32cda7a5a76fb1da5e50622f54336a41331"
+    },
+    "regions": {
+      "bytes": 116,
+      "path": "regions.txt",
+      "sha256": "53f29a5f45723eb0c17f3ce9cf9e2a284650cb30ec9f7fcf4cac77b4638437a9"
+    },
+    "workflow": {
+      "bytes": 265553,
+      "path": "workflow.fa",
+      "sha256": "c07701fa281a9476aeff5b9789ba6b4d33cd55ec7e476dd741c5202bf5865eb1"
+    }
+  },
+  "final_lf": false,
+  "profile": "authored reference engineering fixture, not biological performance evidence",
+  "records": {
+    "M": {
+      "bases": 65,
+      "ending": "LF",
+      "line_bases": 32
+    },
+    "MT": {
+      "bases": 83,
+      "ending": "LF",
+      "line_bases": 41
+    },
+    "chrM": {
+      "bases": 91,
+      "ending": "LF",
+      "line_bases": 23
+    },
+    "chrMT": {
+      "bases": 67,
+      "ending": "LF",
+      "line_bases": 33
+    },
+    "colon": {
+      "bases": 137,
+      "ending": "LF",
+      "line_bases": 67
+    },
+    "colon:2-7": {
+      "bases": 19,
+      "ending": "LF",
+      "line_bases": 19
+    },
+    "crlf": {
+      "bases": 127,
+      "ending": "CRLF",
+      "line_bases": 31
+    },
+    "last": {
+      "bases": 83,
+      "ending": "LF",
+      "line_bases": 83
+    },
+    "long": {
+      "bases": 262177,
+      "ending": "LF",
+      "line_bases": 101
+    }
+  }
+}
