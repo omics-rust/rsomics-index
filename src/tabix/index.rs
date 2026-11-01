@@ -75,28 +75,12 @@ impl LoadedIndex {
         reference_id: usize,
         interval: Interval,
     ) -> Result<Vec<Chunk>> {
-        let mut chunks = match &self.inner {
+        match &self.inner {
             Inner::Tbi(index) => index.query(reference_id, interval),
             Inner::Csi(index) => index.query(reference_id, interval),
         }
-        .map_err(RsomicsError::Io)?;
-        merge_chunks(&mut chunks);
-        Ok(chunks)
+        .map_err(RsomicsError::Io)
     }
-}
-
-fn merge_chunks(chunks: &mut Vec<Chunk>) {
-    chunks.sort_unstable_by_key(|chunk| (chunk.start(), chunk.end()));
-    let mut merged: Vec<Chunk> = Vec::with_capacity(chunks.len());
-    for &chunk in chunks.iter() {
-        match merged.last_mut() {
-            Some(previous) if chunk.start() <= previous.end() => {
-                *previous = Chunk::new(previous.start(), previous.end().max(chunk.end()));
-            }
-            _ => merged.push(chunk),
-        }
-    }
-    *chunks = merged;
 }
 
 fn read_tbi<R>(source: R) -> Result<tabix::Index>
@@ -248,19 +232,32 @@ mod tests {
     use noodles_bgzf::VirtualPosition;
 
     #[test]
-    fn overlapping_index_chunks_are_merged_in_stream_order() {
+    fn queried_index_chunks_are_merged_in_stream_order() {
+        use noodles::csi::binning_index::index::{ReferenceSequence, reference_sequence::Bin};
         let position = |value| VirtualPosition::new(0, value).unwrap();
-        let mut chunks = vec![
+        let chunks = vec![
             Chunk::new(position(10), position(20)),
             Chunk::new(position(0), position(5)),
             Chunk::new(position(4), position(12)),
             Chunk::new(position(30), position(40)),
         ];
 
-        merge_chunks(&mut chunks);
+        let reference = ReferenceSequence::new(
+            [(0, Bin::new(chunks))].into_iter().collect(),
+            vec![VirtualPosition::MIN],
+            None,
+        );
+        let index = LoadedIndex {
+            inner: Inner::Tbi(
+                tabix::Index::builder()
+                    .set_reference_sequences(vec![reference])
+                    .build(),
+            ),
+            header: Header::default(),
+        };
 
         assert_eq!(
-            chunks,
+            index.query_interval(0, Interval::from(..)).unwrap(),
             vec![
                 Chunk::new(position(0), position(20)),
                 Chunk::new(position(30), position(40)),

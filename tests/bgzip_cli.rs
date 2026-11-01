@@ -65,6 +65,82 @@ fn bgzf_level_zero_writes_valid_stored_blocks() {
 }
 
 #[test]
+fn bgzf_default_effort_matches_htslib_libdeflate_level_seven() {
+    let mut input = Vec::new();
+    for position in 0..700 {
+        writeln!(
+            input,
+            "chr{}\t{}\t.\tACGTACGT\tA\t.\tPASS\tDP={};TAG={:x}",
+            position % 17,
+            position * 31,
+            position % 57,
+            position * position % 127
+        )
+        .unwrap();
+    }
+    assert!(input.len() < 65_239);
+    let mut compressor = libdeflater::Compressor::new(libdeflater::CompressionLvl::new(7).unwrap());
+    let mut expected = vec![0; compressor.deflate_compress_bound(input.len())];
+    let size = compressor.deflate_compress(&input, &mut expected).unwrap();
+    expected.truncate(size);
+
+    for workers in [1, 4] {
+        let (encoded, stats) = compress(
+            input.as_slice(),
+            Vec::new(),
+            &CompressOptions {
+                workers: NonZero::new(workers).unwrap(),
+                text: false,
+                ..CompressOptions::default()
+            },
+        )
+        .unwrap();
+        let frame_len = usize::from(u16::from_le_bytes([encoded[16], encoded[17]])) + 1;
+        assert_eq!(stats.blocks, 1);
+        assert_eq!(&encoded[18..frame_len - 8], expected);
+    }
+}
+
+#[test]
+fn bgzf_serial_and_parallel_preserve_short_reads_and_text_carry() {
+    struct ShortReads<'a>(&'a [u8]);
+
+    impl Read for ShortReads<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let size = buffer.len().min(137);
+            self.0.read(&mut buffer[..size])
+        }
+    }
+
+    let mut input = b"short\n".repeat(12_000);
+    input.extend(std::iter::repeat_n(b'x', 140_000));
+    input.extend_from_slice(b"\nlast line without newline");
+    for text in [false, true] {
+        for level in [0, 6, 9] {
+            let mut outputs = Vec::new();
+            for workers in [1, 4] {
+                let (encoded, stats) = compress(
+                    ShortReads(&input),
+                    Vec::new(),
+                    &CompressOptions {
+                        level,
+                        text,
+                        workers: NonZero::new(workers).unwrap(),
+                    },
+                )
+                .unwrap();
+                let mut decoded = Vec::new();
+                decompress(encoded.as_slice(), &mut decoded, None).unwrap();
+                assert_eq!(decoded, input);
+                assert_eq!(stats.bytes_in, input.len() as u64);
+                outputs.push(encoded);
+            }
+            assert_eq!(outputs[0], outputs[1]);
+        }
+    }
+}
+
+#[test]
 fn bgzf_rejects_compression_levels_above_nine_before_writing() {
     let options = CompressOptions {
         level: 10,
@@ -129,6 +205,7 @@ fn bgzf_compression_surfaces_a_midstream_sink_failure() {
 
     let input = vec![b'A'; 2_000_000];
     let options = CompressOptions {
+        level: 0,
         workers: NonZero::new(4).unwrap(),
         ..CompressOptions::default()
     };

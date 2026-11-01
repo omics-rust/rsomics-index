@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, Write};
 use std::num::NonZero;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use noodles_bgzf::io::Reader;
@@ -111,17 +112,18 @@ where
         return Err(invalid("query requires a region or targets file"));
     }
 
-    let cache_bytes = if selections.is_empty()
-        || selections_are_forward(&selections, &reference_ids, options.unique)
-    {
-        0
-    } else {
-        options.cache_bytes
-    };
     let mut reader = if options.header_only {
         None
     } else {
-        Some(BlockReader::open(input, options.workers, cache_bytes)?)
+        Some(BlockReader::open(
+            input,
+            options.workers,
+            if selections.is_empty() {
+                0
+            } else {
+                options.cache_bytes
+            },
+        )?)
     };
     let header_lines = if options.print_header || options.header_only {
         write_header(input, output, &config)?
@@ -246,10 +248,14 @@ impl<W: Write + ?Sized> IndexedQuery<'_, W> {
         records: &mut u64,
     ) -> Result<()> {
         let chunks = self.index.query_interval(reference_id, interval)?;
+        let start = interval
+            .start()
+            .map_or(1, |position| usize::from(position) as u64);
+        let end = interval.end().map(|position| usize::from(position) as u64);
         reader.read_chunks(&chunks, |offset, line| {
             let line = trim_line(line);
             if self.config.is_comment(line) {
-                return Ok(());
+                return Ok(ControlFlow::Continue(()));
             }
             let record = self.config.parse_unlocated(line).rs_with_context(|| {
                 format!(
@@ -257,20 +263,32 @@ impl<W: Write + ?Sized> IndexedQuery<'_, W> {
                     u64::from(offset)
                 )
             })?;
+            let record_reference = self.reference_ids.get(record.reference).ok_or_else(|| {
+                invalid(format!(
+                    "data reference {} is not in the selected index",
+                    String::from_utf8_lossy(record.reference)
+                ))
+            })?;
+            if *record_reference > reference_id
+                || *record_reference == reference_id && end.is_some_and(|end| record.start > end)
+            {
+                return Ok(ControlFlow::Break(()));
+            }
             if !selection.overlaps(&record)
+                || record.end < start
                 || self
                     .targets
                     .is_some_and(|targets| !targets.overlaps(&record))
                 || self.options.unique && visited.overlaps(&record)
             {
-                return Ok(());
+                return Ok(ControlFlow::Continue(()));
             }
             self.output.write_all(line)?;
             self.output.write_all(b"\n")?;
             *records = records
                 .checked_add(1)
                 .ok_or_else(|| invalid("query record count overflows u64"))?;
-            Ok(())
+            Ok(ControlFlow::Continue(()))
         })
     }
 }
@@ -372,26 +390,6 @@ fn reference_ids(index: &LoadedIndex) -> HashMap<Vec<u8>, usize> {
         .enumerate()
         .map(|(id, name)| (name.to_vec(), id))
         .collect()
-}
-
-fn selections_are_forward(
-    selections: &[Selection],
-    reference_ids: &HashMap<Vec<u8>, usize>,
-    unique: bool,
-) -> bool {
-    selections.windows(2).all(|pair| {
-        let previous = &pair[0];
-        let current = &pair[1];
-        let previous_id = reference_ids[previous.reference.as_slice()];
-        let current_id = reference_ids[current.reference.as_slice()];
-        current_id > previous_id
-            || current_id == previous_id
-                && if unique {
-                    current.start >= previous.start
-                } else {
-                    previous.end.is_some_and(|end| current.start > end)
-                }
-    })
 }
 
 fn trim_line(mut line: &[u8]) -> &[u8] {

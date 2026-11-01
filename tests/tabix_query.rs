@@ -58,6 +58,73 @@ fn query_modes_preserve_their_contracts() {
 }
 
 #[test]
+fn query_fragments_preserve_long_overlaps_and_repeated_requests() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("spans.bed.gz");
+    let mut source =
+        b"chr1\t0\t100000\tlong\nchr1\t9\t10\tfirst\nchr1\t19\t20\tmiddle\nchr1\t29\t30\tlate\n"
+            .to_vec();
+    for position in 40..30_000 {
+        writeln!(source, "chr1\t{position}\t{}\tfiller", position + 1).unwrap();
+    }
+    source.extend_from_slice(b"chr2\t0\t1\tother\n");
+    let output = File::create(&path).unwrap();
+    let (output, _) = compress(source.as_slice(), output, &CompressOptions::default()).unwrap();
+    drop(output);
+    build_named(
+        &path,
+        &directory.path().join("spans.bed.gz.tbi"),
+        &BuildOptions {
+            config: Config::from_preset(Preset::Bed),
+            kind: IndexKind::Tbi,
+        },
+    )
+    .unwrap();
+    let targets = directory.path().join("spans-targets.bed");
+    std::fs::write(&targets, b"chr1\t0\t40\nchr2\t0\t1\n").unwrap();
+
+    for workers in [1, 4] {
+        for cache_bytes in [0, 1024 * 1024] {
+            let options = QueryOptions {
+                workers: std::num::NonZero::new(workers).unwrap(),
+                cache_bytes,
+                targets_file: Some(targets.clone()),
+                ..QueryOptions::default()
+            };
+            let unique = query_text(
+                &path,
+                QueryOptions {
+                    regions: vec!["chr1:20-25".into(), "chr1:1-40".into(), "chr2:1".into()],
+                    unique: true,
+                    ..options.clone()
+                },
+            );
+            assert_eq!(
+                unique,
+                "chr1\t0\t100000\tlong\nchr1\t19\t20\tmiddle\nchr1\t9\t10\tfirst\nchr1\t29\t30\tlate\nchr2\t0\t1\tother\n"
+            );
+
+            let ordered = query_text(
+                &path,
+                QueryOptions {
+                    regions: vec![
+                        "chr1:10".into(),
+                        "chr1:30".into(),
+                        "chr2:1".into(),
+                        "chr1:10".into(),
+                    ],
+                    ..options
+                },
+            );
+            assert_eq!(
+                ordered,
+                "chr1\t0\t100000\tlong\nchr1\t9\t10\tfirst\nchr1\t0\t100000\tlong\nchr1\t29\t30\tlate\nchr2\t0\t1\tother\nchr1\t0\t100000\tlong\nchr1\t9\t10\tfirst\n"
+            );
+        }
+    }
+}
+
+#[test]
 fn region_and_target_files_preserve_their_distinct_orders() {
     let directory = tempfile::tempdir().unwrap();
     let data = indexed_vcf(directory.path());

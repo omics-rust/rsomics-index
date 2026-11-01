@@ -38,7 +38,8 @@ rsomics-index bgzip calls.vcf \
   --threads 4
 ```
 
-Compression levels 0 through 9 are supported. Text mode is the default and keeps full block
+Compression levels 0 through 9 use HTSlib 1.24's libdeflate effort mapping; the default level 6
+uses libdeflate level 7. Level 0 emits stored blocks. Text mode is the default and keeps full block
 boundaries on newlines when possible; `--binary` fills blocks without that preference. Every
 stream ends with exactly one canonical BGZF EOF member.
 
@@ -107,6 +108,9 @@ Region queries preserve request order. Target-only queries scan once and preserv
 `--unique` deduplicates physical records across regions; `--separate-regions` emits a marker before
 each region and is mutually exclusive with `--unique`. `--threads` controls BGZF decoding workers,
 and `--cache-bytes 0` disables the bounded decompressed-block cache.
+The configured cache also applies to coordinate-forward requests, whose indexed physical chunks
+can overlap. Queries stop parsing records beyond each selected interval but still validate all
+frames covered by the returned index chunks, including their CRC, boundaries and EOF constraints.
 
 ## FASTA references and dictionaries
 
