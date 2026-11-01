@@ -15,9 +15,10 @@ use super::region::Region;
 
 const CHUNK_BASES: usize = 1024 * 1024;
 
+#[derive(Clone, Copy)]
 struct Task {
     order: usize,
-    record: usize,
+    region: usize,
     start: u64,
     bases: usize,
 }
@@ -31,6 +32,40 @@ pub(super) fn run(
     width: Option<u64>,
     output: &mut dyn Write,
 ) -> Result<u64> {
+    let mut tasks = plan(regions);
+    let mut bases = 0u64;
+    let mut column = 0u64;
+    let mut emit = |task: Task, data: Result<Vec<u8>>| -> Result<()> {
+        let region = &regions[task.region];
+        let wrap = width.unwrap_or(index.records[region.record].line_bases);
+        if task.start == region.start {
+            writeln!(output, ">{}", region.header)?;
+            column = 0;
+        }
+        wrapped(output, &data?, wrap, &mut column)?;
+        if task.start + task.bases as u64 == region.end {
+            if column > 0 {
+                output.write_all(b"\n")?;
+            }
+            bases = bases
+                .checked_add(region.end - region.start)
+                .ok_or_else(|| invalid("query base count overflow"))?;
+        }
+        Ok(())
+    };
+    if workers == 1 {
+        let mut reader = BufReader::with_capacity(256 * 1024, Source::open(reference, gzi, false)?);
+        for task in tasks {
+            let data = chunk(
+                &mut reader,
+                &index.records[regions[task.region].record],
+                task.start,
+                task.bases,
+            );
+            emit(task, data)?;
+        }
+        return Ok(bases);
+    }
     let mut readers = Vec::new();
     for _ in 0..workers {
         readers.push(BufReader::with_capacity(
@@ -42,10 +77,10 @@ pub(super) fn run(
         let capacity = workers
             .checked_mul(2)
             .ok_or_else(|| invalid("query worker count overflow"))?;
-        let (send, tasks) = bounded::<Task>(capacity);
+        let (send, pending) = bounded::<Task>(capacity);
         let (results, receive) = bounded::<(usize, Result<Vec<u8>>)>(capacity);
         for mut reader in readers {
-            let tasks = tasks.clone();
+            let tasks = pending.clone();
             let results = results.clone();
             let index = Arc::clone(&index);
             thread::Builder::new()
@@ -54,7 +89,7 @@ pub(super) fn run(
                     while let Ok(task) = tasks.recv() {
                         let data = chunk(
                             &mut reader,
-                            &index.records[task.record],
+                            &index.records[regions[task.region].record],
                             task.start,
                             task.bases,
                         );
@@ -64,65 +99,58 @@ pub(super) fn run(
                     }
                 })?;
         }
-        drop(tasks);
+        drop(pending);
         drop(results);
-        let outcome = (|| {
-            let mut bases = 0u64;
-            let mut next_region = 0;
-            let mut position = regions.first().map_or(0, |region| region.start);
-            let mut column = 0u64;
-            while next_region < regions.len() {
-                let mut plan = Vec::with_capacity(capacity);
-                while plan.len() < capacity && next_region < regions.len() {
-                    let region = &regions[next_region];
-                    let take = (region.end - position).min(CHUNK_BASES as u64) as usize;
-                    let first = position == region.start;
-                    let last = position + take as u64 == region.end;
-                    send.send(Task {
-                        order: plan.len(),
-                        record: region.record,
-                        start: position,
-                        bases: take,
-                    })
-                    .map_err(|_| invalid("reference query workers stopped"))?;
-                    plan.push((next_region, first, last));
-                    position += take as u64;
-                    if last {
-                        next_region += 1;
-                        position = regions.get(next_region).map_or(0, |region| region.start);
-                    }
+        let outcome = (|| -> Result<()> {
+            loop {
+                let mut batch: Vec<_> = tasks.by_ref().take(capacity).collect();
+                if batch.is_empty() {
+                    break;
                 }
-                let mut batch = Vec::with_capacity(plan.len());
-                for _ in 0..plan.len() {
-                    batch.push(
+                for (order, task) in batch.iter_mut().enumerate() {
+                    task.order = order;
+                    send.send(*task)
+                        .map_err(|_| invalid("reference query workers stopped"))?;
+                }
+                let mut ready = Vec::with_capacity(batch.len());
+                for _ in 0..batch.len() {
+                    ready.push(
                         receive
                             .recv()
                             .map_err(|_| invalid("reference query worker produced no result"))?,
                     );
                 }
-                batch.sort_unstable_by_key(|(order, _)| *order);
-                for ((_, data), (region, first, last)) in batch.into_iter().zip(plan) {
-                    let region = &regions[region];
-                    let wrap = width.unwrap_or(index.records[region.record].line_bases);
-                    if first {
-                        writeln!(output, ">{}", region.header)?;
-                        column = 0;
-                    }
-                    wrapped(output, &data?, wrap, &mut column)?;
-                    if last {
-                        if column > 0 {
-                            output.write_all(b"\n")?;
-                        }
-                        bases = bases
-                            .checked_add(region.end - region.start)
-                            .ok_or_else(|| invalid("query base count overflow"))?;
-                    }
+                ready.sort_unstable_by_key(|(order, _)| *order);
+                for ((_, data), task) in ready.into_iter().zip(batch) {
+                    emit(task, data)?;
                 }
             }
-            Ok(bases)
+            Ok(())
         })();
         drop(send);
         outcome
+    })?;
+    Ok(bases)
+}
+
+fn plan(regions: &[Region]) -> impl Iterator<Item = Task> + '_ {
+    let mut next_region = 0;
+    let mut position = regions.first().map_or(0, |region| region.start);
+    std::iter::from_fn(move || {
+        let region = regions.get(next_region)?;
+        let bases = (region.end - position).min(CHUNK_BASES as u64) as usize;
+        let task = Task {
+            order: 0,
+            region: next_region,
+            start: position,
+            bases,
+        };
+        position += bases as u64;
+        if position == region.end {
+            next_region += 1;
+            position = regions.get(next_region).map_or(0, |region| region.start);
+        }
+        Some(task)
     })
 }
 
@@ -135,7 +163,24 @@ fn chunk(
     if bases == 0 {
         return Ok(Vec::new());
     }
-    reader.seek(SeekFrom::Start(record.byte_offset(start)?))?;
+    let offset = record.byte_offset(start)?;
+    reader.seek(SeekFrom::Start(offset))?;
+    if !reader.get_ref().compressed() {
+        let span = record.byte_offset(start + bases as u64 - 1)? - offset + 1;
+        if span < reader.capacity() as u64 {
+            let mut bounded = BufReader::with_capacity(span as usize, reader.get_mut().take(span));
+            return read_bases(&mut bounded, record, start, bases);
+        }
+    }
+    read_bases(reader, record, start, bases)
+}
+
+fn read_bases(
+    reader: &mut impl Read,
+    record: &Record,
+    start: u64,
+    bases: usize,
+) -> Result<Vec<u8>> {
     let mut data = vec![0; bases];
     let mut written = 0;
     let mut position = start;

@@ -326,6 +326,85 @@ fn captured_samtools_reference_workflow_preserves_outputs_and_named_files() {
             .status
             .success()
     );
+    let reference = temporary.path().join("bounded.fa");
+    let sequence: Vec<_> = b"ACGTN"
+        .iter()
+        .copied()
+        .cycle()
+        .take(2 * 1024 * 1024 + 139)
+        .collect();
+    let mut fasta = b">MT\n".to_vec();
+    for line in sequence.chunks(70) {
+        fasta.extend_from_slice(line);
+        fasta.push(b'\n');
+    }
+    fs::write(&reference, &fasta).unwrap();
+    succeeded(
+        command()
+            .args(["faidx", "build"])
+            .arg(&reference)
+            .output()
+            .unwrap(),
+    );
+    let requests = [
+        ("MT:65-143", 64, 143),
+        ("MT", 0, sequence.len()),
+        ("MT:65-143", 64, 143),
+        ("MT:2097281-2097291", 2097280, 2097291),
+        ("MT:9999999-", sequence.len(), sequence.len()),
+    ];
+    for workers in [1, 4] {
+        for width in [None, Some(17), Some(0)] {
+            let mut query = command();
+            query
+                .args(["faidx", "query"])
+                .arg(&reference)
+                .arg("--threads")
+                .arg(workers.to_string());
+            if let Some(width) = width {
+                query.arg("--length").arg(width.to_string());
+            }
+            let result = query
+                .args(requests.iter().map(|(name, _, _)| name))
+                .output()
+                .unwrap();
+            assert!(result.status.success());
+            let mut expected = Vec::new();
+            for (name, start, end) in requests {
+                writeln!(expected, ">{name}").unwrap();
+                for line in sequence[start..end].chunks(width.unwrap_or(70).max(1) as usize) {
+                    expected.extend_from_slice(line);
+                    if width != Some(0) {
+                        expected.push(b'\n');
+                    }
+                }
+                if width == Some(0) && end > start {
+                    expected.push(b'\n');
+                }
+            }
+            assert_eq!(result.stdout, expected);
+        }
+    }
+    let protected = temporary.path().join("bounded-protected.fa");
+    fs::write(&protected, b"keep\n").unwrap();
+    for (position, replacement) in [(5, b'\t'), (74, b'X')] {
+        let original = fasta[position];
+        fasta[position] = replacement;
+        fs::write(&reference, &fasta).unwrap();
+        for workers in [1, 4] {
+            let result = command()
+                .args(["faidx", "query"])
+                .arg(&reference)
+                .args(["--threads", &workers.to_string(), "--output"])
+                .arg(&protected)
+                .args(["--force", "MT:1-140"])
+                .output()
+                .unwrap();
+            assert!(!result.status.success());
+            assert_eq!(fs::read(&protected).unwrap(), b"keep\n");
+        }
+        fasta[position] = original;
+    }
     if evidence.is_some() {
         println!("native reference evidence: {}", temporary.keep().display());
     }
